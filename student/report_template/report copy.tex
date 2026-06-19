@@ -1,0 +1,63 @@
+\documentclass[11pt]{article}
+\usepackage[margin=0.5in]{geometry}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+
+\title{Time Series Forecasting Project Expose}
+\author{Group ID: 140 \\ Members: Rosela Berberi, Anja Koroveshi}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Idea}
+The goal of this project is to investigate deep learning approaches for multivariate
+time forecasting by predicting future data load and evaluating it on the provided
+benchmark dataset. In out approach we ait to compare recurrent and attention-based 
+deep learning architectures and measure their feasibility in terms of short-term 
+dynamics and long-range dependency capturing.
+
+\section{Planned architectures}
+We are considering two main model families for implementation and evaluation:
+
+1. LST + attention
+
+The first approach is an encoder-decoder architecture model based on the Long Short-
+Term Memory networks combined with an attention mechanism. The motivation behind this
+choice comes as a result of LSTM models capturing sequential temporal dynamics on 
+different states, while attention modules help focus on the most important timesteps 
+of a sequence and generating repeated patterns.
+
+2. Transformer / TCN ....
+
+\section{Additional Dataset}
+To check if the model generalizes to other data domains beyond the benchmark, we will
+use a multivariate weather forecasting dataset such as the Jena Climate Dataset that 
+contains measurements across many factors (temperature, humidity, wind speed, etc). 
+The format and the cross-variable dependencies that affect weather make the comparison 
+between LSTM-attention and ...... more realistic and effective regarding future predictions. 
+
+\section{Planned improvements}
+Potential improvements and experiments on the two architectures might include: teacher 
+forcing for autoregression, different dropout and regularization strategies, ensemble 
+forecasting, sequence series normalization or learning rate scheduling based on gradient 
+behaviour. 
+
+To obtain results, the models will be compared against the provided benchmark baselines mentioned in 
+the source code, including: Naive last-value forecast, Lag-24/-168 repeat and the 
+Seasonal mean baseline. Additionally performance will be measured using the leader board metrics:
+MAE, RMSE, MAPE, etc.
+
+\section{Risks and Open questions}
+A challenge that might arise during implementation is the risk of error propagation and accumulation 
+across the network as well as the difficulty of forecasting highly noisy data with little correlation.
+A general problem is related to the trade-off between model complexity and generalization, running to 
+the risk of overfitting due to the dataset size. For all challenges, the main question remains whether
+transformer or recurrent architectures perform better under the following circumstances.
+
+\section{Sources}
+
+
+\end{document}

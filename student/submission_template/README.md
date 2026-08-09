@@ -1,44 +1,56 @@
-# Final Submission Template
+# Multivariate Time Series Forecasting
 
-Use this folder as the starting point for `final_submission.zip`.
+Implements the **LSTM + Attention** recurrent-attention hybrid and 
+the **PatchTST** patch-based Transformer.
 
-For simple runnable baseline forecasts, see `student/baseline/`.
+## Layout
 
-## Required Files
+```
+predict.py              # inference entrypoint (required command)
+requirements.txt
+src/
+  model.py               # ForecastModel:  wrapper + checkpoint (de)serialization
+  dataset.py              # sliding-window dataset + calendar feature helpers
+  train.py                # training loop (scheduled sampling + SGDR)
+  models/
+    common.py             # RevIN, SpatialDropout1d, calendar_features
+    lstm_attention.py      # LSTMAttentionForecaster
+    patchtst.py             # PatchTST
+```
 
-- `predict.py`: inference entrypoint.
-- `requirements.txt`: Python dependencies needed for inference.
-- `checkpoint.pt`: trained model weights or checkpoint.
-- `src/`: optional package code.
+## Training
 
-## Required Command
+```bash
+DATA_DIR=/path/to/downloaded/hf/dataset
+python -m src.train \
+  --train "$DATA_DIR/train.csv" \
+  --forecast-index "$DATA_DIR/forecast_index_validation.csv" \
+  --checkpoint-out checkpoint.pt \
+  --history-len 168 --block-len 24 --epochs 30
+```
 
-Your submission must support:
+`--forecast-index` is optional. When given each epoch also reports 
+validation MAE by rolling the model
+forward over the validation forecast index, and the checkpoint with the
+best validation MAE is kept. 
+`checkpoint.pt` stores both the weights and
+the model config needed to rebuild it.
+
+## Inference
 
 ```bash
 python predict.py --input_dir /data/input --output_file /output/predictions.csv --checkpoint /submission/checkpoint.pt
 ```
 
-## Output Format
-
-Required schema:
-
-```csv
-series_id,timestamp,prediction
-```
-
-Your output must cover every row in the provided forecast index. Public validation uses `forecast_index_validation.csv`; private evaluation uses `forecast_index_test.csv` in the input directory. In the current benchmark design, the 24-hour forecast horizon is a rollout block length. The validation and private test forecast indices each contain 336 hourly timestamps per series.
-
-The leaderboard reports MAE, MSE, RMSE, MAPE, sMAPE, and WAPE. Lower is better for all metrics.
-
-The model name is entered in the leaderboard Space when uploading validation predictions or the final archive. It is not part of `predictions.csv`. Use the same model name for the final archive as for the validation row that represents that checkpoint.
+`input_dir` must contain `train.csv` (history) plus
+`forecast_index_test.csv` or `forecast_index_validation.csv` (rows to
+predict). Predictions are written with schema
+`series_id,timestamp,prediction`, covering every requested row.
 
 ## Packaging
 
-From inside this directory, create the archive with:
+From inside this directory:
 
 ```bash
-zip -r final_submission.zip predict.py requirements.txt checkpoint.pt src
+zip -r final_submission.zip predict.py requirements.txt checkpoint.pt src baselines.py
 ```
-
-Do not include training data, private data, virtual environments, caches, or large unused artifacts.

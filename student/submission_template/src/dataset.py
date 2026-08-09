@@ -50,7 +50,7 @@ class SlidingWindowDataset(Dataset):
                 future_target = target[future_start: future_start + block_len]
                 future_hours = hours[future_start: future_start + block_len]
                 
-                self._samples.append((hist_targetm hist_hours, future_target, future_hours))
+                self._samples.append((hist_target, hist_hours, future_target, future_hours))
     
     def __len__(self) -> int:
         return len(self._samples)

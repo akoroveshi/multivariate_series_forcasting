@@ -1,123 +1,138 @@
-"""Inference entrypoint for final private evaluation.
+"""Inference entrypoint for the private evaluation.
 
-Loads a trained checkpoint and rolls it forward, per series, to cover
-every timestamp in the provided forecast index. The 24-hour rollout
-block is chained autoregressively (each predicted block is fed back as
-additional history) until the full 336-step benchmark horizon is covered.
+Required command::
+
+    python predict.py --input_dir /data/input --output_file /output/predictions.csv \
+        --checkpoint /submission/checkpoint.pt
+
+The private input directory contains ``test_input.csv`` (covariates for the test
+window), ``forecast_index_test.csv`` and ``metadata.json`` -- but no observed
+target. The last released target therefore sits 336 steps before the first test
+timestamp. This script reconstructs a continuous per-series timeline from three
+sources, in increasing priority:
+
+1. the **context table** bundled inside the checkpoint (tail of the public
+   history *with* targets, plus the public validation covariates),
+2. any table found in ``input_dir`` (``test_input.csv``, ``validation_input.csv``,
+   ``train.csv``, ``history.csv``),
+3. observed targets, wherever any of those tables provide them.
+
+The model is then rolled forward from the last observed target to the final
+requested timestamp and only the rows of the forecast index are written out. No
+network access is required.
 """
 
 from __future__ import annotations
+
 import argparse
 from pathlib import Path
-import numpy as np
+
 import pandas as pd
 import torch
 
-from src.dataset import hours_since_epoch
+from src.evaluate import forecast_frame
+from src.features import FeatureSpec, SeriesPanel, concat_inputs
 from src.model import ForecastModel
-from src.models.common import calendar_features
 
-DEFAULT_HISTORY_LEN = 168
+FORECAST_INDEX_NAMES = ("forecast_index_test.csv", "forecast_index_validation.csv", "forecast_index.csv")
+INPUT_TABLE_NAMES = ("train.csv", "history.csv", "validation_input.csv", "test_input.csv")
 
 
 def load_forecast_index(input_dir: Path) -> pd.DataFrame:
-    """ Load the rows that need predictions """
-    candidates = [
-        input_dir / "forecast_index_test.csv",
-        input_dir / "forecast_index_validation.csv",
-    ]
-    
-    for forecast_index in candidates:
-        if forecast_index.exists():
-            return pd.read_csv(forecast_index)
-    expected = ", ".join(path.name for path in candidates)
-    
-    raise FileNotFoundError(f"Expected one of {expected} in input_dir.")
+    """Load the rows that need predictions."""
+    for name in FORECAST_INDEX_NAMES:
+        candidate = input_dir / name
+        if candidate.exists():
+            return pd.read_csv(candidate)
+    expected = ", ".join(FORECAST_INDEX_NAMES)
+    raise FileNotFoundError(f"Expected one of {expected} in {input_dir}.")
 
 
-def load_history(input_dir: Path) -> pd.DataFrame:
-    """ Load the history table used as conditioning context for every series """
-    history_path = input_dir / "train.csv"
-    if not history_path.exists():
-        raise FileNotFoundError(f"Expected train.csv (history) in {input_dir}.")
-    return pd.read_csv(history_path)
+def load_input_tables(input_dir: Path) -> list[pd.DataFrame]:
+    """Load every covariate/history table present in the input directory."""
+    tables = []
+    for name in INPUT_TABLE_NAMES:
+        candidate = input_dir / name
+        if candidate.exists():
+            tables.append(pd.read_csv(candidate))
+    return tables
 
 
-def predict_series(
-    model: ForecastModel,
-    history: pd.DataFrame,
-    index_part: pd.DataFrame,
-    device: torch.device,
-    history_len: int,
-    time_col: str,
-    target_col: str,
-) -> np.ndarray:
-    """ Roll the model forward to cover every timestamp requested """
-    history = history.sort_values(time_col).tail(history_len)
-    if len(history) == 0:
-        raise ValueError("No history available for a required series.")
-    if len(history) < history_len:
-        # Not enough context yet, repeat the earliest
-        # value backward, encoder still receives history_len steps
-        pad = history_len - len(history)
-        first_row = history.iloc[[0]]
-        history = pd.concat([pd.concat([first_row] * pad, ignore_index=True), history], ignore_index=True)
+def build_panel(
+    model: ForecastModel, input_dir: Path, forecast_index: pd.DataFrame
+) -> SeriesPanel:
+    """Glue bundled context and provided tables into one panel."""
+    spec = model.feature_spec or FeatureSpec.benchmark()
+    tables: list[pd.DataFrame] = []
+    if model.context is not None:
+        tables.append(model.context)
+    tables.extend(load_input_tables(input_dir))
+    if not tables:
+        raise FileNotFoundError(
+            "No covariate table available: the checkpoint carries no context and "
+            f"{input_dir} contains none of {INPUT_TABLE_NAMES}."
+        )
 
-    hist_target = torch.tensor(
-        history[target_col].to_numpy(dtype=np.float32), device=device
-    ).view(1, -1, 1)
-    hist_hours = torch.tensor(hours_since_epoch(history[time_col]), device=device)
-    hist_calendar = calendar_features(hist_hours).unsqueeze(0)
+    merged = concat_inputs(tables, spec)
+    # Compare on parsed timestamps, not on their string form: the private tables
+    # need not use the same textual datetime format as the bundled context.
+    def keys(frame: pd.DataFrame) -> set[tuple[str, pd.Timestamp]]:
+        stamps = pd.to_datetime(frame[spec.time_col])
+        return set(zip(frame[spec.series_col].astype(str), stamps))
 
-    index_part = index_part.sort_values(time_col)
-    future_hours = torch.tensor(hours_since_epoch(index_part[time_col]), device=device)
-    decoder_calendar = calendar_features(future_hours).unsqueeze(0)
+    missing = keys(forecast_index) - keys(merged)
+    if missing:
+        raise ValueError(
+            f"{len(missing)} forecast-index rows have no covariates in the provided tables "
+            f"(first: {sorted(missing)[0]})."
+        )
+    if spec.target_col not in merged.columns:
+        merged[spec.target_col] = float("nan")
+    return SeriesPanel.from_frame(
+        merged, spec, model.feature_scaler, series_index=model.series_index
+    )
 
-    predictions = model.rollout(hist_target, hist_calendar, decoder_calendar, horizon=len(index_part))
-    return predictions.squeeze(0).squeeze(-1).cpu().numpy()
 
-
-def main() -> None:
-    """ Load a checkpoint and write predictions for every row """
-    parser = argparse.ArgumentParser(description="Generate private test predictions.")
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Generate forecasts for a forecast index.")
     parser.add_argument("--input_dir", required=True, type=Path)
     parser.add_argument("--output_file", required=True, type=Path)
     parser.add_argument("--checkpoint", required=True, type=Path)
-    parser.add_argument("--history_len", type=int, default=DEFAULT_HISTORY_LEN, help="Trailing history steps fed to the encoder")
-    parser.add_argument("--series_col", default="series_id")
-    parser.add_argument("--time_col", default="timestamp")
-    parser.add_argument("--target_col", default="target")
-    args = parser.parse_args()
+    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    args = parser.parse_args(argv)
 
     if not args.checkpoint.exists():
         raise FileNotFoundError(f"Missing checkpoint: {args.checkpoint}")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(args.device)
     model = ForecastModel.load_checkpoint(str(args.checkpoint), map_location=str(device)).to(device)
     model.eval()
 
     forecast_index = load_forecast_index(args.input_dir)
-    history = load_history(args.input_dir)
+    panel = build_panel(model, args.input_dir, forecast_index)
 
-    rows = []
-    for series_id, index_part in forecast_index.groupby(args.series_col, sort=False):
-        series_history = history.loc[history[args.series_col].eq(series_id)]
-        preds = predict_series(
-            model,
-            series_history,
-            index_part,
-            device,
-            args.history_len,
-            args.time_col,
-            args.target_col,
-        )
-        result = index_part.sort_values(args.time_col)[[args.series_col, args.time_col]].copy()
-        result["prediction"] = preds
-        rows.append(result)
+    predictions = forecast_frame(
+        model,
+        panel,
+        forecast_index,
+        device=device,
+        history_len=model.history_len,
+        batch_size=args.batch_size,
+        clip_min=model.config.get("clip_min"),
+    )
 
-    predictions = pd.concat(rows, ignore_index=True)
+    spec = panel.spec
+    ordered = forecast_index[[spec.series_col, spec.time_col]].copy()
+    ordered[spec.time_col] = pd.to_datetime(ordered[spec.time_col])
+    ordered = ordered.merge(predictions, on=[spec.series_col, spec.time_col], how="left")
+    if ordered["prediction"].isna().any():
+        raise RuntimeError(f"{int(ordered['prediction'].isna().sum())} forecast rows were not filled.")
+    ordered[spec.time_col] = forecast_index[spec.time_col].to_numpy()
+
     args.output_file.parent.mkdir(parents=True, exist_ok=True)
-    predictions.to_csv(args.output_file, index=False)
+    ordered.to_csv(args.output_file, index=False)
+    print(f"wrote {len(ordered):,} predictions to {args.output_file}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,29 @@
+{
+  "lstm_no_series_embedding": {
+    "model": "lstm_attention",
+    "extra_args": [
+      "--no-series-embedding"
+    ],
+    "val": {
+      "mae": 2.0205496428414276,
+      "mse": 9.189530410346157,
+      "rmse": 3.0314238255885892,
+      "mape": 31.17871080987571,
+      "smape": 27.093077206575046,
+      "wape": 21.52276361498194
+    },
+    "test": {
+      "mae": 3.4402944410195766,
+      "mse": 21.69315966542818,
+      "rmse": 4.657591616428836,
+      "mape": 37.649203755550246,
+      "smape": 36.53746131489579,
+      "wape": 32.21055319983363
+    },
+    "params": 397702,
+    "best_epoch": 5,
+    "epochs_run": 5,
+    "train_windows": 3552,
+    "runtime_seconds": 1919.3
+  }
+}

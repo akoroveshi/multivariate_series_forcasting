@@ -1,0 +1,29 @@
+{
+  "patchtst_no_series_embedding": {
+    "model": "patchtst",
+    "extra_args": [
+      "--no-series-embedding"
+    ],
+    "val": {
+      "mae": 1.6209013614903338,
+      "mse": 7.482925449950746,
+      "rmse": 2.73549363917205,
+      "mape": 22.758518233173255,
+      "smape": 20.999438557352143,
+      "wape": 17.265736068478628
+    },
+    "test": {
+      "mae": 1.7762638906983377,
+      "mse": 8.606332772330353,
+      "rmse": 2.933655189747144,
+      "mape": 21.59039451759553,
+      "smape": 19.175674953950285,
+      "wape": 16.630681916669328
+    },
+    "params": 588699,
+    "best_epoch": 7,
+    "epochs_run": 8,
+    "train_windows": 3168,
+    "runtime_seconds": 800.1
+  }
+}

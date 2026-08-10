@@ -1,0 +1,23 @@
+# datasets (downloaded, see README)
+data/
+
+# training artefacts
+runs/
+logs/
+submission/
+
+# report build products (report.pdf is committed)
+report/*.aux
+report/*.bbl
+report/*.blg
+report/*.log
+report/*.out
+report/*.xdv
+report/*.synctex.gz
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/

@@ -1,0 +1,278 @@
+{
+  "pressure": {
+    "baselines": {
+      "val": {
+        "naive_last_value": {
+          "mae": 8.038289851234072,
+          "mse": 114.41716920993723,
+          "rmse": 10.696596150642373,
+          "mape": 0.8149428192487034,
+          "smape": 0.8119206726672592,
+          "wape": 0.8119335653535656
+        },
+        "lag24_repeat": {
+          "mae": 8.590364556085495,
+          "mse": 121.96564529865614,
+          "rmse": 11.04380574343175,
+          "mape": 0.8702866552446943,
+          "smape": 0.8675822010994159,
+          "wape": 0.8676976634076705
+        },
+        "seasonal_mean": {
+          "mae": 6.732973852611724,
+          "mse": 77.79411863285682,
+          "rmse": 8.820097427628383,
+          "mape": 0.6803905166229496,
+          "smape": 0.6806723289524006,
+          "wape": 0.6800858847786004
+        }
+      },
+      "test": {
+        "naive_last_value": {
+          "mae": 7.878267698033207,
+          "mse": 110.48015519081179,
+          "rmse": 10.510954057116404,
+          "mape": 0.7950862172685255,
+          "smape": 0.7957888654019292,
+          "wape": 0.7953628666980662
+        },
+        "lag24_repeat": {
+          "mae": 8.093936264445697,
+          "mse": 107.76196864877912,
+          "rmse": 10.38084623953072,
+          "mape": 0.817241554185154,
+          "smape": 0.8170564642441291,
+          "wape": 0.8171360249370686
+        },
+        "seasonal_mean": {
+          "mae": 6.49073692702804,
+          "mse": 68.1659916420313,
+          "rmse": 8.256269838252097,
+          "mape": 0.654832451063462,
+          "smape": 0.6556506315026543,
+          "wape": 0.6552825223942089
+        }
+      }
+    },
+    "lstm_attention": {
+      "val": {
+        "mae": 8.194669986906506,
+        "mse": 112.7602827750551,
+        "rmse": 10.618864476725141,
+        "mape": 0.8298655630450333,
+        "smape": 0.8279166816508544,
+        "wape": 0.8277292486962731
+      },
+      "test": {
+        "mae": 6.999041288156542,
+        "mse": 85.17133362162193,
+        "rmse": 9.2288316498689,
+        "mape": 0.7060387922951611,
+        "smape": 0.7071413228518879,
+        "wape": 0.7065991860718375
+      },
+      "params": 397734,
+      "best_epoch": 5,
+      "runtime_seconds": 3021.6,
+      "config": {
+        "model_type": "lstm_attention",
+        "num_history_features": 24,
+        "num_future_features": 8,
+        "num_static_features": 0,
+        "history_len": 168,
+        "block_len": 24,
+        "dropout": 0.1,
+        "use_revin": true,
+        "clip_min": 934.905029296875,
+        "num_series_slots": 2,
+        "series_embedding_dim": 16,
+        "hidden_size": 128,
+        "encoder_layers": 2,
+        "decoder_layers": 1,
+        "spatial_dropout": 0.1,
+        "use_attention": true
+      }
+    },
+    "patchtst": {
+      "val": {
+        "mae": 7.225371206374396,
+        "mse": 87.16673329871459,
+        "rmse": 9.336312617876214,
+        "mape": 0.7316610377930631,
+        "smape": 0.7302714065498839,
+        "wape": 0.7298220782240022
+      },
+      "test": {
+        "mae": 6.4243560994820585,
+        "mse": 71.05601589653547,
+        "rmse": 8.429473049754383,
+        "mape": 0.6480681565687518,
+        "smape": 0.6490709017871107,
+        "wape": 0.6485809418800127
+      },
+      "params": 510011,
+      "best_epoch": 4,
+      "runtime_seconds": 643.8,
+      "config": {
+        "model_type": "patchtst",
+        "num_history_features": 24,
+        "num_future_features": 8,
+        "num_static_features": 0,
+        "history_len": 168,
+        "block_len": 336,
+        "dropout": 0.1,
+        "use_revin": true,
+        "clip_min": 934.905029296875,
+        "num_series_slots": 2,
+        "series_embedding_dim": 16,
+        "patch_len": 24,
+        "stride": 12,
+        "d_model": 128,
+        "n_heads": 8,
+        "n_layers": 3,
+        "d_ff": 256,
+        "covariate_mode": "tokens",
+        "pointwise_head": true,
+        "pointwise_hidden": 64
+      }
+    }
+  },
+  "temperature": {
+    "baselines": {
+      "val": {
+        "naive_last_value": {
+          "mae": 3.7938964444798504,
+          "mse": 23.40723909817986,
+          "rmse": 4.838102840802359,
+          "mape": 6969448.938460687,
+          "smape": 69.2493170236236,
+          "wape": 45.5577888302499
+        },
+        "lag24_repeat": {
+          "mae": 3.5311643216377497,
+          "mse": 20.18775195283998,
+          "rmse": 4.493078226877425,
+          "mape": 5687201.663849091,
+          "smape": 69.64341963810976,
+          "wape": 42.40285438580047
+        },
+        "seasonal_mean": {
+          "mae": 5.5551412105750515,
+          "mse": 41.8858931965502,
+          "rmse": 6.471931179837298,
+          "mape": 11936486.886305073,
+          "smape": 77.68739142066782,
+          "wape": 66.70713180952272
+        }
+      },
+      "test": {
+        "naive_last_value": {
+          "mae": 5.957143122287514,
+          "mse": 55.530296679850835,
+          "rmse": 7.451865315466379,
+          "mape": 231.81785070475138,
+          "smape": 65.6669034291889,
+          "wape": 50.47035263945692
+        },
+        "lag24_repeat": {
+          "mae": 5.002061232998894,
+          "mse": 40.100429007506605,
+          "rmse": 6.3324899532100805,
+          "mape": 180.9432027477728,
+          "smape": 65.15569854790552,
+          "wape": 42.37866862877538
+        },
+        "seasonal_mean": {
+          "mae": 6.688065001258692,
+          "mse": 65.18815343494566,
+          "rmse": 8.073918096868809,
+          "mape": 267.1552895474779,
+          "smape": 69.6987487515627,
+          "wape": 56.66289900376255
+        }
+      }
+    },
+    "lstm_attention": {
+      "val": {
+        "mae": 2.937974807066625,
+        "mse": 14.545078160698404,
+        "rmse": 3.8138010122053307,
+        "mape": 6870672.629428243,
+        "smape": 60.708684434491055,
+        "wape": 35.279728323551076
+      },
+      "test": {
+        "mae": 3.7850908348386167,
+        "mse": 24.034029786587922,
+        "rmse": 4.902451405836464,
+        "mape": 195.5745962809274,
+        "smape": 48.050120778441105,
+        "wape": 32.06820203663747
+      },
+      "params": 397734,
+      "best_epoch": 5,
+      "runtime_seconds": 3144.1,
+      "config": {
+        "model_type": "lstm_attention",
+        "num_history_features": 24,
+        "num_future_features": 8,
+        "num_static_features": 0,
+        "history_len": 168,
+        "block_len": 24,
+        "dropout": 0.1,
+        "use_revin": true,
+        "clip_min": -22.65333366394043,
+        "num_series_slots": 2,
+        "series_embedding_dim": 16,
+        "hidden_size": 128,
+        "encoder_layers": 2,
+        "decoder_layers": 1,
+        "spatial_dropout": 0.1,
+        "use_attention": true
+      }
+    },
+    "patchtst": {
+      "val": {
+        "mae": 3.039620690460357,
+        "mse": 14.664937942280007,
+        "rmse": 3.8294827251575385,
+        "mape": 7286463.038637766,
+        "smape": 60.955605973073745,
+        "wape": 36.50031031857459
+      },
+      "test": {
+        "mae": 3.756659602553897,
+        "mse": 22.640674285428197,
+        "rmse": 4.75822175664693,
+        "mape": 169.63481333633226,
+        "smape": 49.02301111273006,
+        "wape": 31.827325782713743
+      },
+      "params": 510011,
+      "best_epoch": 1,
+      "runtime_seconds": 633.9,
+      "config": {
+        "model_type": "patchtst",
+        "num_history_features": 24,
+        "num_future_features": 8,
+        "num_static_features": 0,
+        "history_len": 168,
+        "block_len": 336,
+        "dropout": 0.1,
+        "use_revin": true,
+        "clip_min": -22.65333366394043,
+        "num_series_slots": 2,
+        "series_embedding_dim": 16,
+        "patch_len": 24,
+        "stride": 12,
+        "d_model": 128,
+        "n_heads": 8,
+        "n_layers": 3,
+        "d_ff": 256,
+        "covariate_mode": "tokens",
+        "pointwise_head": true,
+        "pointwise_hidden": 64
+      }
+    }
+  }
+}

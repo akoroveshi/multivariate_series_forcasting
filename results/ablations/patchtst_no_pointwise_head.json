@@ -1,0 +1,29 @@
+{
+  "patchtst_no_pointwise_head": {
+    "model": "patchtst",
+    "extra_args": [
+      "--no-pointwise-head"
+    ],
+    "val": {
+      "mae": 1.7386832175802232,
+      "mse": 8.055532053810161,
+      "rmse": 2.838226920774687,
+      "mape": 23.90039060598274,
+      "smape": 21.89693344408851,
+      "wape": 18.520340752772174
+    },
+    "test": {
+      "mae": 1.9293564677576622,
+      "mse": 9.471833888790238,
+      "rmse": 3.077634463153517,
+      "mape": 22.340846554845665,
+      "smape": 20.481926764217505,
+      "wape": 18.064046613328134
+    },
+    "params": 590122,
+    "best_epoch": 7,
+    "epochs_run": 8,
+    "train_windows": 3168,
+    "runtime_seconds": 737.5
+  }
+}

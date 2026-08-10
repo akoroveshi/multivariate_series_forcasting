@@ -1,0 +1,24 @@
+{
+  "base_wape": 15.695542780132165,
+  "deltas": {
+    "hour_sin": 0.1732096660621636,
+    "hour_cos": 0.1671899236995067,
+    "dow_sin": 0.14917403142832697,
+    "dow_cos": 0.011575073265014169,
+    "is_weekend": 0.21099833149634684,
+    "trend": 0.0015818752160647875,
+    "workload_intensity": 0.3755905191902684,
+    "demand_forecast": 1.9894631857728768,
+    "staffing_forecast": 0.2096884433207613,
+    "upstream_quality_forecast": 1.0773682195974352,
+    "promotion_intensity": 1.1341412587492492,
+    "shock_risk": 0.41382425769647924,
+    "maintenance_known": 2.885834466055023,
+    "unit_reliability_forecast": 0.008346296808118936,
+    "queue_pressure_forecast": 14.086977814452933,
+    "network_pressure_forecast": 7.598385144854497,
+    "event_load_forecast": 1.6838767599832707,
+    "service_irregularity_risk_forecast": 0.9480727809059672,
+    "throughput_disruption_risk_forecast": 1.259493760143961
+  }
+}

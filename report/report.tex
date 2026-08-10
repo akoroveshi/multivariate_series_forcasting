@@ -1,0 +1,599 @@
+\documentclass[10pt,twocolumn]{article}
+\usepackage[margin=0.75in]{geometry}
+\setlength{\columnsep}{0.28in}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{microtype}
+\usepackage[table]{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds}
+\usepackage[colorlinks=true,allcolors=blue!55!black]{hyperref}
+\usepackage{caption}
+\captionsetup{font=small,labelfont=bf}
+\setlength{\emergencystretch}{2em}
+
+\input{tables/macros}
+
+\title{\vspace{-2.2em}Known-Future Covariates Are the Signal:\\A Patch Transformer with Covariate Query Tokens\\for Multivariate Operational Load Forecasting\vspace{-0.4em}}
+\author{Group ID: 140 \\ Rosela Berberi, Anja Koroveshi \\ \small Deep Learning (SS26) bonus project, TU Darmstadt}
+\date{}
+
+\begin{document}
+\twocolumn[
+  \begin{@twocolumnfalse}
+  \maketitle
+  \begin{abstract}
+  \noindent
+  We forecast a $336$-hour horizon for $96$ correlated operational load series from
+  a $168$-hour history and $22$ covariates. Our central observation is that on this
+  benchmark the covariates are \emph{known in advance} for the whole forecast
+  window, which shifts the problem from extrapolating the target towards learning a
+  covariate-to-load response specific to each unit. We therefore extend the PatchTST
+  backbone with \emph{future covariate query tokens}, a per-series embedding and a
+  pointwise covariate residual path, and contrast it with an LSTM+Attention
+  encoder--decoder that decodes iteratively. On held-out tails of the public
+  training data our submitted model reaches \ensValWape\,\% WAPE in the validation
+  regime --- \ensVsSeasonal\,\% below the seasonal-mean baseline --- and
+  \ensTestWape\,\% in a harder regime reproducing the private split's $336$-step
+  unobserved gap, cutting the naive last-value error by \ensVsNaive\,\%. Ablations
+  attribute almost all of the gain to the covariate pathway rather than to the
+  backbone, and they overturn our headline hypothesis: the recurrent decoder's
+  collapse across the gap
+  (\lstmRevinValWape\,\%$\,\rightarrow\,$\lstmRevinTestWape\,\%) is caused by
+  reversible instance normalisation compounding through the rollout, not by
+  iterative decoding as such --- removing it recovers
+  \lstmValWape\,\%/\lstmTestWape\,\% and makes the two families near-equivalent.
+  Finally, a transfer to Jena Climate, where every channel except the calendar is
+  past-only, shows how much of the remaining margin the covariate contract rather
+  than the architecture was buying.
+  \end{abstract}
+  \vspace{1em}
+  \end{@twocolumnfalse}
+]
+
+\section{Introduction}
+
+Multivariate time series forecasting asks for the joint future of several
+correlated signals given their shared past. This project's benchmark is an
+operational instance: $96$ anonymised units (\texttt{unit\_000}--\texttt{unit\_095})
+report an hourly \emph{operational load index} and the task is to predict $336$
+hours ahead for each. If the index tracks pressure on a unit, as its description
+suggests, such a forecast is what drives staffing decisions; methodologically it is
+interesting because the horizon is $2\times$ the conditioning window, so no part of
+the answer can be read off the recent past by persistence.
+
+Our starting point was an empirical look at the released tables rather than at the
+model zoo, and it changed the project. The file \texttt{validation\_input.csv}
+covers \emph{exactly} the rows of \texttt{forecast\_index\_validation.csv}: all
+$22$ covariates are supplied for the forecast window itself, while the target is
+withheld. The benchmark is thus not a pure extrapolation task but a
+\emph{covariate-conditioned} one, and the strongest covariate correlates $0.68$
+with the target at the same hour, whereas the target's own autocorrelation has
+already decayed to $0.26$ after six hours. A second measurement shaped the
+architecture: a per-series ordinary least squares fit on the covariates reaches
+$17.6$\,\% WAPE against $22.1$\,\% for a single pooled fit, i.e.\ the
+covariate-to-load response is unit-specific even though the static columns
+(capacity, zone) barely explain anything.
+
+Two consequences follow. A model should consume the future covariates
+\emph{directly} at the resolution at which they act, which argues for a direct
+multi-step decoder over an autoregressive one; and it needs a per-unit degree of
+freedom. We build both into a PatchTST \cite{nie2023patchtst} backbone and compare
+against the recurrent-attention hybrid from our expos\'e. Our contributions are
+\textbf{PatchTST-cov}, a patch Transformer whose forecast window enters as patched
+\emph{future covariate query tokens}, with a learned per-series embedding and a
+pointwise covariate residual path (Sec.~\ref{sec:method}); a \textbf{gap-aware
+protocol} that scores every model both immediately after the history and across the
+$336$-step gap separating it from the private test window
+(Sec.~\ref{sec:protocol}); an \textbf{ablation study} plus a permutation analysis
+of which covariates the model uses (Sec.~\ref{sec:ablations}); and a
+\textbf{transfer experiment} on Jena Climate, chosen because it inverts the
+covariate contract (Sec.~\ref{sec:jena}).
+
+\section{Related Work}
+
+\paragraph{Recurrent forecasters.} LSTMs \cite{hochreiter1997lstm} underpin
+probabilistic forecasters such as DeepAR \cite{salinas2020deepar}, which also
+popularised the per-series embedding we adopt, and additive attention
+\cite{bahdanau2015attention} lets a decoder re-read all encoder states. Iterative
+decoders suffer from \emph{exposure bias} --- trained on ground-truth predecessors,
+they consume their own outputs at test time --- for which scheduled sampling
+\cite{bengio2015scheduled} is the standard mitigation and the one we use.
+
+\paragraph{Transformers for long-horizon forecasting.} After the original
+Transformer \cite{vaswani2017attention}, a line of work attacked its quadratic cost
+and point-wise tokenisation of time series: Informer's sparse attention
+\cite{zhou2021informer}, Autoformer's decomposition and auto-correlation
+\cite{wu2021autoformer}, FEDformer's frequency-domain attention
+\cite{zhou2022fedformer}. PatchTST \cite{nie2023patchtst} instead tokenises
+\emph{sub-series patches} and processes each channel independently with a shared
+backbone, preserving local semantics while shortening the sequence by the patch
+stride; iTransformer \cite{liu2024itransformer} inverts the axes and attends over
+variates. A sceptical counter-line matters for calibration: DLinear
+\cite{zeng2023dlinear} showed a single linear layer can match several of these
+Transformers, and N-BEATS \cite{oreshkin2020nbeats}, N-HiTS \cite{challu2023nhits}
+and TiDE \cite{das2023tide} reach comparable accuracy with MLPs. We take the lesson
+seriously: our baselines include the simple references and our ablations include a
+covariate-free variant, so the gain we claim is attributable to the covariate
+machinery rather than to attention per se.
+
+\paragraph{Covariate-conditioned models.} The Temporal Fusion Transformer
+\cite{lim2021tft} is the closest relative of our design: it separates static,
+past-only and known-future inputs and feeds the latter to the decoder; TiDE
+\cite{das2023tide} does the same with a dense encoder. We borrow the input
+taxonomy and contribute a minimal way to graft it onto a patch-based backbone, as
+query tokens on the same token sequence.
+
+\paragraph{Normalisation, regularisation, optimisation.} Reversible instance
+normalisation \cite{kim2022revin} is the near-default remedy for distribution shift
+between training and forecast windows; Sec.~\ref{sec:ablations} finds it harmful at
+this horizon, which is one of our main results. We also use spatial dropout
+\cite{tompson2015spatialdropout}, AdamW \cite{loshchilov2019adamw} and cosine
+annealing with warm restarts \cite{loshchilov2017sgdr}, in PyTorch
+\cite{paszke2019pytorch}. Dilated convolutions \cite{bai2018tcn} and deep
+state-space models \cite{gu2022s4,gu2024mamba} are the natural next backbones.
+
+\section{Method}
+\label{sec:method}
+
+\subsection{Problem setup and features}
+
+For series $i$ and origin $t$ we observe the target history
+$y_{i,t-L+1:t} \in \mathbb{R}^{L}$ with $L=168$, encoder covariates
+$X^{\mathrm{h}}_{i,t-L+1:t} \in \mathbb{R}^{L \times F_{\mathrm{h}}}$, the
+known-future covariates $X^{\mathrm{f}}_{i,t+1:t+H} \in \mathbb{R}^{H \times
+F_{\mathrm{f}}}$ and static features $s_i \in \mathbb{R}^{S}$, and predict
+$\hat{y}_{i,t+1:t+H}$.
+
+The $22$ released covariates split into six deterministic calendar encodings (hour
+and day-of-week sine/cosine, a weekend flag, a normalised time trend), $13$
+exogenous hourly drivers (demand, staffing, queue and network pressure, event load,
+maintenance, several risk indices) and three static columns (capacity, zone
+sine/cosine). Ten drivers are missing at random for $\approx\!4.5$\,\% of rows; we
+interpolate them within each series and append a binary \emph{missingness
+indicator} per affected column, so the network can tell an imputed value from an
+observed one. This yields $F_{\mathrm{h}}=F_{\mathrm{f}}=29$ and $S=3$. Covariates
+are standardised with statistics fitted on the training slice only and serialised
+into the checkpoint, so inference reproduces training preprocessing without the
+training CSV.
+
+The primary metric is $\mathrm{WAPE} = 100\cdot\sum|y-\hat{y}| / \sum|y|$, whose
+denominator is constant for a fixed evaluation set. WAPE is therefore a rescaled sum
+of absolute errors, and the aligned objective is plain $L_1$ \emph{in the original
+target units}~\cite{hyndman2006measures} --- in particular not on per-window
+normalised targets, which would silently reweight series by their own scale.
+
+\subsection{Shared components}
+
+\paragraph{RevIN.} Each window is normalised by its own mean and standard
+deviation over time and the prediction is de-normalised with the same statistics
+\cite{kim2022revin}. We implement it \emph{statelessly}, passing the statistics
+explicitly in both directions, so that the conditioning-window statistics survive
+an autoregressive rollout: caching them on the module --- as reference
+implementations do --- lets the decoder's own call on a single timestep overwrite
+them with $(\mu,\sigma)=(y_t,0)$.
+
+\paragraph{Series embedding.} A learned vector $e_i \in \mathbb{R}^{16}$ per
+series is concatenated to $s_i$ \cite{salinas2020deepar}. Row $0$ of the table is
+reserved for unseen series, so a checkpoint degrades gracefully rather than
+failing if the private split introduces a new unit.
+
+\begin{figure*}[t]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\footnotesize,
+  box/.style={draw=black!35,rounded corners=1.5pt,align=center,inner sep=2.5pt,
+              minimum height=7mm,minimum width=13mm},
+  data/.style={box,fill=blue!7},
+  op/.style={box,fill=black!5},
+  core/.style={box,fill=orange!12,minimum height=11mm},
+  res/.style={box,fill=green!8},
+  arr/.style={-{Latex[length=1.5mm]},draw=black!55},
+  lbl/.style={font=\scriptsize\itshape,text=black!60,align=center},
+  panel/.style={font=\small\bfseries,anchor=west}
+]
+% ---------- (a) PatchTST-cov: direct decoding ----------
+\node[panel] at (-0.6,3.1) {(a) PatchTST-cov \textmd{\itshape --- direct multi-step decoding}};
+\node[data] (hist)  at (0.6,2.05) {$y_{t-L+1:t}$\\$X^{\mathrm{h}}_{t-L+1:t}$};
+\node[data] (fut)   at (0.6,0.15) {$X^{\mathrm{f}}_{t+1:t+H}$};
+\node[op]   (revin) at (3.0,2.05) {RevIN\\normalise};
+\node[op]   (patchh) at (5.4,2.05) {patchify\\$P{=}24$, step $12$};
+\node[op]   (patchf) at (5.4,0.15) {patchify\\$P{=}24$};
+\node[op]   (embh)  at (7.9,2.05) {linear\\embed};
+\node[op]   (embf)  at (7.9,0.15) {linear $+$\\query token};
+\node[lbl]  (nh) at (7.9,1.30) {$N{=}13$ tokens};
+\node[lbl]  (nf) at (7.9,-0.65) {$M{=}14$ tokens};
+\node[core] (enc)   at (10.9,1.10)
+  {Transformer encoder\\$3\times$(MHSA $+$ FFN)\\$d{=}128$, $h{=}8$};
+\node[op,minimum height=5.5mm,minimum width=44mm] (stat) at (10.9,2.75)
+  {$+$ static $s_i$ $\oplus$ series emb.\ $e_i$ $\oplus$ pos.};
+\node[op]   (head)  at (13.9,1.85) {head\\$d\!\to\!P$};
+\node[op]   (pw)    at (13.9,-0.10) {pointwise MLP\\$[X^{\mathrm{f}}_{t+k},s_i,e_i]$};
+\node[res]  (sum)   at (16.1,0.90) {$\oplus$\\RevIN$^{-1}$};
+\node[res]  (yhat)  at (18.3,0.90) {$\hat{y}_{t+1:t+H}$\\$H{=}336$};
+\draw[arr] (hist) -- (revin);
+\draw[arr] (revin) -- (patchh);
+\draw[arr] (patchh) -- (embh);
+\draw[arr] (fut) -- (patchf);
+\draw[arr] (patchf) -- (embf);
+\draw[arr] (embh.east) -- ++(0.5,0) |- (enc.west);
+\draw[arr] (embf.east) -- ++(0.5,0) |- ([yshift=-3mm]enc.west);
+\draw[arr] (stat) -- (enc);
+\draw[arr] (enc.east) -- ++(0.4,0) |- (head.west);
+\draw[arr] (fut.south) -- ++(0,-0.8) -| (pw.south);
+\draw[arr] (head.east) -- ++(0.35,0) |- (sum.north west) ;
+\draw[arr] (pw.east) -- ++(0.35,0) |- (sum.south west);
+\draw[arr] (sum) -- (yhat);
+% ---------- (b) LSTM + Attention: iterative decoding ----------
+\begin{scope}[yshift=-4.35cm]
+\node[panel] at (-0.6,1.55) {(b) LSTM+Attention \textmd{\itshape --- iterative decoding in $24$-step blocks}};
+\node[data] (hist2) at (0.6,0.35) {$y_{t-L+1:t}$\\$X^{\mathrm{h}}_{t-L+1:t}$};
+\node[op]   (sd)    at (3.3,0.35) {RevIN $+$\\spatial dropout};
+\node[core] (encl)  at (6.3,0.35) {LSTM encoder\\$2\times128$};
+\node[op]   (att)   at (9.4,0.35) {Bahdanau\\attention};
+\node[core] (decl)  at (12.5,0.35) {LSTM decoder\\$1\times128$};
+\node[data] (fut2)  at (12.5,-1.25) {$X^{\mathrm{f}}_{t+k},\,s_i,\,e_i$};
+\node[res]  (yk)    at (15.6,0.35) {$\hat{y}_{t+k}$};
+\node[res]  (blocks) at (18.3,0.35) {$\hat{y}_{t+1:t+H}$\\$H{=}336$};
+\draw[arr] (hist2) -- (sd);
+\draw[arr] (sd) -- (encl);
+\draw[arr] (encl) -- node[lbl,above,pos=0.5]{all hidden\\states} (att);
+\draw[arr] (att) -- node[lbl,above,pos=0.5]{context\\vector} (decl);
+\draw[arr] (fut2) -- (decl);
+\draw[arr] (decl) -- (yk);
+\draw[arr] (yk.north) -- ++(0,0.5) -|
+  node[lbl,above,pos=0.55]{scheduled sampling: feed back $\hat{y}_{t+k}$ or true $y_{t+k}$}
+  ([xshift=-3mm]decl.north);
+\draw[arr,dashed] (yk) -- node[lbl,above,pos=0.5]{chain $14\times$} (blocks);
+\end{scope}
+\end{tikzpicture}}
+\caption{The two architectures. (a) \textbf{PatchTST-cov} patches the target history
+\emph{and} the known-future covariates and lets one Transformer encoder attend over
+both; the head reads the horizon off the query tokens (a direct $336$-step
+forecast) and a pointwise MLP on $X^{\mathrm{f}}$ restores the resolution patching
+discards. (b) \textbf{LSTM+Attention} decodes $24$ steps at a time and chains
+blocks. Both share the static/series embedding and the raw-scale $L_1$ objective;
+the RevIN stage shown here is removed in the final models (Sec.~\ref{sec:ablations}).}
+\label{fig:arch}
+\end{figure*}
+
+\subsection{PatchTST-cov}
+
+The backbone follows PatchTST \cite{nie2023patchtst}: the RevIN-normalised target
+history is cut into overlapping patches of length $P=24$ with stride $12$, giving
+$N=13$ tokens, each linearly embedded to $d=128$. Channel independence is
+preserved in the sense of the original paper --- one shared backbone sees a single
+univariate target channel and every series is an independent sample. Encoder
+covariates are fused into the history tokens by flattening the corresponding
+$P\times F_{\mathrm{h}}$ block and projecting it to $d$.
+
+The extension is on the decoder side (Fig.~\ref{fig:arch}a). We patch the
+known-future covariates into $M = H/P = 14$ non-overlapping blocks, embed each,
+add a learned query token, and \emph{append} them to the same token sequence.
+Self-attention then relates every forecast segment both to the observed history
+and to the other forecast segments, and a shared head maps each query token's
+output to its $P$ target values. The forecast is therefore \textbf{direct}: no
+autoregression inside the horizon, hence no error accumulation.
+
+A patch token compresses $24$ hours of covariates into one $128$-dimensional vector
+before the head expands it back to $24$ predictions, discarding within-patch
+resolution. Because the drivers act largely instantaneously, we add a
+\emph{pointwise residual path}: a two-layer MLP applied independently at each
+forecast step to $[X^{\mathrm{f}}_{t+k}, s_i, e_i]$, summed onto the patch
+prediction in normalised space, leaving the Transformer to model only the residual
+cross-step structure. This is the largest departure from our expos\'e's plan.
+
+\subsection{LSTM+Attention}
+
+The recurrent branch (Fig.~\ref{fig:arch}b) is the encoder--decoder from the
+expos\'e, adapted to covariates. A two-layer LSTM ($128$ units) encodes
+$[\text{RevIN}(y), X^{\mathrm{h}}, s_i, e_i]$ after spatial dropout; a
+single-layer LSTM decoder unrolls $24$ steps, at each step consuming the known
+covariates of the step being predicted, an additive attention context over all
+encoder states \cite{bahdanau2015attention}, and either its own previous
+prediction or the ground truth with probability $\epsilon$. We anneal $\epsilon$
+linearly from $0.9$ to $0.1$ across training \cite{bengio2015scheduled}. Horizons
+beyond one block are covered by chaining: predictions are appended to the
+conditioning window together with the known covariates of those steps, and the
+window is trimmed back to $L$.
+
+\subsection{Ensemble, training and the gap}
+
+The two families make structurally different errors, so we blend them after the
+rollout with a single scalar weight $w$ on PatchTST-cov, chosen by grid search.
+Which split that search runs on turns out to matter more than the value it returns,
+and Sec.~\ref{sec:ablations} returns to it. Members are trained separately with AdamW
+($\text{lr}=10^{-3}$, weight decay $10^{-4}$), gradient clipping at $1.0$, batch
+size $64$, cosine annealing with warm restarts \cite{loshchilov2017sgdr} and $L_1$
+loss; training windows are cut with stride $12$ (PatchTST-cov) or $24$ (LSTM).
+Predictions are clipped from below at the smallest target seen in training, since
+the load index is strictly positive.
+
+At private evaluation the input directory provides only the test covariates and the
+forecast index, and the last \emph{released} target lies $336$ steps earlier. Our
+checkpoint therefore bundles a $504$-step tail of the public history (with targets)
+plus the public validation covariates; \texttt{predict.py} rebuilds one continuous
+per-series timeline and rolls forward to the end of the requested index --- two
+chained $336$-step blocks for PatchTST-cov, $28$ for the LSTM.
+
+\section{Experiments on the benchmark}
+\label{sec:experiments}
+
+\subsection{Protocol}
+\label{sec:protocol}
+
+The public release contains no validation labels, so \emph{every} number we report
+comes from a chronological split of \texttt{train.csv} ($96$ series
+$\times$ $4{,}320$ hourly steps, 2023-01-01 to 2023-06-29). The last $672$ steps
+are held out and split in two:
+
+The \textbf{validation regime} scores steps $3{,}649$--$3{,}984$ with the forecast
+origin at the end of the fit slice, mirroring the public leaderboard; the
+\textbf{test regime} scores steps $3{,}985$--$4{,}320$ from the \emph{same} origin,
+so the model must first bridge $336$ unobserved steps, mirroring the private split.
+Model selection --- early stopping, the blending weight, all hyperparameters ---
+uses the validation regime only; the test regime is scored once per final
+checkpoint. Our metric code is a copy of the leaderboard's, but the evaluation
+\emph{set} is a held-out tail of \texttt{train.csv} rather than the hidden
+validation split, so these values are not directly comparable to leaderboard
+scores.
+
+\subsection{Main results}
+
+\begin{table}[t]
+\centering
+\caption{Benchmark results on the held-out tails of \texttt{train.csv}; lower is
+better, WAPE is the leaderboard's primary metric, and the test regime starts $336$
+steps after the conditioning window. $^{\ast}$ marks the variant selected on
+validation and shipped; full six-metric tables are in \texttt{results/}.}
+\label{tab:benchmark}
+\scriptsize
+\setlength{\tabcolsep}{3.5pt}
+\input{tables/benchmark}
+\end{table}
+
+Table~\ref{tab:benchmark} collects the results. Both neural models clear the
+mandatory naive last-value reference by a wide margin, and both also clear the
+stronger seasonal-mean baseline. PatchTST-cov reaches \patchValWape\,\% WAPE in the
+validation regime against \seasonalValWape\,\% for the seasonal mean and
+\naiveValWape\,\% for the naive baseline, and \patchTestWape\,\% in the gap regime
+--- a \ensVsNaive\,\% error reduction over the naive baseline the project requires
+us to beat.
+
+Our expos\'e asked whether direct multi-step output mitigates the error
+accumulation of an iterative decoder. The first pair of rows says yes,
+emphatically: with RevIN in place --- the configuration we planned --- PatchTST-cov
+is regime-insensitive (\patchRevinValWape\,\% to \patchRevinTestWape\,\%) while the
+LSTM collapses from \lstmRevinValWape\,\% to \lstmRevinTestWape\,\% once it has to
+chain $28$ blocks instead of $14$. That is the answer we expected, and it is
+misleading. The ablation in Sec.~\ref{sec:ablations} traces almost all of that
+collapse to RevIN rather than to iterative decoding, and the second pair of rows
+confirms it at full budget: without RevIN the same recurrent architecture scores
+\lstmValWape\,\% and \lstmTestWape\,\%, within $0.25$ WAPE of the Transformer in
+both regimes. Decoding strategy was never the dominant factor; a normalisation
+choice interacting with the rollout was.
+
+Fig.~\ref{fig:horizon} makes the mechanism visible. Fitting a line to MAE against
+the forecast step, the pre-repair recurrent model drifts upward by $+0.26$ MAE per
+$100$ steps, while PatchTST-cov, the repaired LSTM and their blend all drift by
+$+0.01$ --- a factor of $25$, and flat to within the noise of the curve. Error
+accumulation on this benchmark is a property of that one normalisation choice, not
+of recurrence. Because the two families now make comparable but differently-shaped
+errors, blending them finally pays: $w=\ensWeight$ gives \ensValWape\,\% and
+\ensTestWape\,\%, better than either member in either regime, with both selection
+criteria of Sec.~\ref{sec:ablations} agreeing on the weight. That blend is our
+submitted model.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/error_by_horizon.pdf}
+\caption{MAE against the forecast step $h$ ($12$-hour moving average). Both
+held-out windows share one origin and are contiguous, so $h=1\dots336$ is the
+validation regime and $h=337\dots672$ the test regime. Only the pre-repair
+recurrent model (dashed) drifts upward with $h$; the two repaired models and their
+blend are flat and almost indistinguishable. Fitted drift per $100$ steps:
+$+0.26$ MAE with RevIN versus $+0.01$ for every model without it.}
+\label{fig:horizon}
+\end{figure}
+
+\subsection{Ablations and analysis}
+\label{sec:ablations}
+
+\begin{table}[t]
+\centering
+\caption{Ablations. Every row --- including the two references --- uses the same
+reduced budget (stride $96$, $8$/$5$ epochs), so each $\Delta$ is attributable to
+the ablated component rather than to a different amount of training; absolute
+values are therefore worse than Table~\ref{tab:benchmark}. Positive $\Delta$ is
+worse. ``No future cov.\ tokens'' necessarily also removes the pointwise path and
+reverts to PatchTST's flatten head.}
+\label{tab:ablations}
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\input{tables/ablations}
+\end{table}
+
+Table~\ref{tab:ablations} removes one component at a time.
+
+\paragraph{The covariate contract dominates everything else.} Removing the future
+covariate tokens costs over $23$ WAPE points, and removing the covariates entirely
+(vanilla channel-independent PatchTST) over $30$; the recurrent model loses $18.9$
+the same way. Every other edit in the table moves the metric by less than two
+points. This is the empirical core of the paper: on this benchmark the attention
+backbone is not what produces the accuracy --- the availability of future covariates
+is --- and the architecture's job is to consume them at the right resolution.
+Consistent with that, the pointwise residual path, whose only purpose is to preserve
+within-patch resolution, is the most valuable remaining component, and patch length
+matters little once it is present. Attention is the recurrent branch's equivalent
+load-bearing part.
+
+\paragraph{Two components did not survive contact with the data.} The per-series
+embedding, which our per-unit OLS diagnostic predicted would matter, moves WAPE by
+$+0.34$ on validation and is within noise for the LSTM. The honest reading is that
+the covariate pathway already carries the unit-specific response the pooled linear
+fit could not: once a unit's drivers are read at full resolution, its identity adds
+little.
+
+\textbf{RevIN is worse than that --- it actively hurts}, by $-0.65$ for
+PatchTST-cov and by $-1.33$ on validation and $-11.03$ across the gap for the LSTM
+(a negative $\Delta$ means removing the component helps). The asymmetry is the
+clue. RevIN re-injects the conditioning window's own mean and standard deviation
+into the prediction; over $336$--$672$ steps last week's level is a poor estimate of
+next fortnight's, so the transform adds variance rather than removing shift. For the
+\emph{iterative} decoder it is worse than that: every chained block re-estimates
+those statistics \emph{from the block it just predicted}, so a level error is fed
+back into the normaliser and amplified at each of the $28$ hops. That is the
+mechanism behind the collapse we first attributed to iterative decoding. Because the
+sign is the same on validation, we could act on it without consulting the test split
+--- we re-trained both families without RevIN at the full budget
+(Table~\ref{tab:benchmark}), and both improved, the LSTM by $9.4$ WAPE in the gap
+regime. This is the one place where the ablation study changed the submitted model
+rather than merely explaining it.
+
+\paragraph{Scheduled sampling helps, mostly where it should.} Teacher forcing only
+($\epsilon=1$) is worse in both regimes and three times more so across the gap ---
+the classic exposure-bias failure, visible mainly where more blocks are chained.
+Free running only ($\epsilon=0$) is \emph{not} worse than the annealed schedule
+here, so on this dataset the annealing buys optimisation stability rather than final
+accuracy. Replacing $L_1$ with MSE costs accuracy under WAPE, as the
+metric-alignment argument of Sec.~\ref{sec:method} predicts.
+
+\paragraph{Tuning the blend weight needs a gap-matched criterion.} A weight tuned
+on the validation regime is tuned on a regime the model never runs in, because the
+public leaderboard has no gap. We therefore also grid-search $w$ on a
+\emph{gap-matched} criterion: the same validation labels, but with the forecast
+origin moved back one window so the members must bridge $336$ unobserved steps
+first (\gapValWape\,\% for the blend). With the RevIN-free members the two criteria
+happen to agree on $w=\ensWeight$, so the distinction costs us nothing here --- but
+it did matter before the repair, when the val-tuned weight of $0.80$ improved
+validation by $0.23$ and lost $0.26$ in the gap regime. Both grids are recorded in
+\texttt{results/ensemble.json}.
+
+\paragraph{What the model uses.} Shuffling one covariate at a time across the
+forecast window gives a concentrated ranking: from a base of \patchValWape\,\%,
+destroying \texttt{queue\_pressure\_forecast} alone costs $+14.1$ WAPE and
+\texttt{network\_pressure\_forecast} $+7.6$, then \texttt{maintenance\_known}
+($+2.9$) and \texttt{demand\_forecast} ($+2.0$); nothing else reaches $+1.7$ and
+the calendar encodings are negligible. Two of the $22$ inputs carry most of the
+accuracy. The values are a lower bound per channel, since the covariates are
+mutually correlated; the full ranking is in
+\texttt{figures/permutation\_importance.pdf}.
+
+\section{Additional dataset: Jena Climate}
+\label{sec:jena}
+
+\paragraph{Dataset and use case.} The Jena Climate dataset
+\cite{jena2026} records $14$ atmospheric variables --- air pressure, air and
+potential temperature, dew point, relative humidity, three vapour-pressure
+channels, specific humidity, water-vapour concentration, air density, wind speed,
+maximum wind speed and wind direction --- every $10$ minutes at the Max Planck
+Institute for Biogeochemistry weather station, from 2009-01-01 to 2017-01-01
+($420{,}551$ rows). The forecasting use case is short-to-medium range local
+weather nowcasting --- the next two weeks of temperature, and of pressure as a
+second target, from the recent multivariate state.
+
+We chose it because it \emph{inverts} the benchmark's covariate contract: nothing
+except the calendar is known in advance, so it tests whether our gains come from
+modelling or from unusually generous inputs. It is also harder as a multivariate
+problem --- the channels are non-linearly coupled (dew point and vapour pressure
+are functions of temperature and humidity) and the target has strong diurnal
+\emph{and} annual seasonality, the latter longer than any window we condition on.
+
+\paragraph{What had to change.} Exactly one abstraction: a \emph{past-only}
+covariate group. Encoder features become $[\text{known-future} \cup
+\text{past-only}]$ while decoder features are the known-future subset alone, so
+$F_{\mathrm{h}}=24 > F_{\mathrm{f}}=8$; both architectures read the two widths from
+the specification and no layer was rewritten. When the iterative decoder appends a
+predicted block to its window it cannot know the past-only channels there, so they
+are filled by persistence --- never by their true future values, which would leak
+the answer. Preprocessing is dataset-specific: hourly means to match the
+benchmark's rate, repair of the station's $-9999$ wind sentinel, Cartesian wind
+components in place of the circular direction column, and day-of-year sine/cosine
+for the annual cycle. The split is chronological $70/10/20$; because the held-out
+slices span thousands of steps we use the standard rolling-origin protocol (one
+origin every $336$ steps, $L=168$, $H=336$). Temperature crosses zero, so we report
+MAE and RMSE rather than WAPE.
+
+\begin{table}[t]
+\centering
+\caption{Jena Climate, hourly, $L=168$, $H=336$, rolling-origin evaluation.
+Temperature crosses zero, so MAE and RMSE replace WAPE. Both targets use the same
+architecture and optimiser settings as the benchmark, with a reduced epoch budget
+and no static or missingness features; the calendar encodings are the only
+known-future covariates.}
+\label{tab:jena}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\input{tables/jena}
+\end{table}
+
+\paragraph{Does it transfer?} Only partly, and the pattern of where it fails is the
+useful result (Table~\ref{tab:jena}). On \emph{temperature} the architecture
+transfers cleanly: both models beat every baseline on both splits, cutting test MAE
+from $5.00$ (the best baseline, seasonal naive) to $3.76$, a $25$\,\% reduction,
+with no tuning beyond the feature specification. On \emph{pressure} it essentially
+fails: PatchTST-cov is worse than the seasonal-mean baseline on validation
+($7.23$ vs $6.73$) and only ties it on test ($6.42$ vs $6.49$), and the recurrent
+model loses on both.
+
+The contrast is what our thesis predicts. Nothing here is known in advance except
+the calendar, so the query tokens and the pointwise path have almost no input and
+the model falls back on target history plus calendar --- precisely the regime in
+which linear baselines are competitive \cite{zeng2023dlinear}. What is left of the
+advantage depends on how much of the target the history explains: temperature has a
+diurnal cycle the encoder can exploit, whereas pressure is driven by synoptic
+systems invisible in a $168$-hour window and whose long-run mean the seasonal
+baseline already captures. The two decoders are again within $0.03$ MAE on
+temperature, a third sign that the direct/iterative choice is not what separates
+models here. The backbone, recipe and past-only abstraction all transfer unchanged;
+the \emph{size} of the win moves with the covariate contract, not the architecture.
+
+\section{Conclusion}
+
+We set out to compare a recurrent-attention hybrid against a patch Transformer, and
+the most useful results were not about which backbone wins. Because the benchmark
+supplies all $22$ covariates for the forecast window, the task is a
+covariate-conditioned regression rather than extrapolation: feeding that window in
+as patched query tokens and preserving its resolution with a pointwise residual
+path account for essentially the whole improvement, while the per-series embedding
+our own diagnostic motivated proved worth almost nothing. The second result is a
+correction. We measured the large gap-regime collapse we expected from an iterative
+decoder and would have reported it as evidence for direct decoding; the ablation
+showed the cause was RevIN's statistics compounding through the rollout, and
+removing it left the two decoders within $0.25$ WAPE of each other. Blending them
+then helps in both regimes, and our submitted model reaches \ensTestWape\,\% WAPE
+across the gap, a \ensVsNaive\,\% reduction over the naive baseline. Both findings
+were only visible because every configuration was scored in a regime matching
+deployment rather than the one the leaderboard shows.
+
+\paragraph{Limitations.} Selection rests on a single $336$-step validation window
+of $96$ series with no seed repeats. Re-scoring identical checkpoints under a
+different CPU thread count moves WAPE by up to $0.07$ ($0.14$ where a chained
+rollout amplifies float-summation order), so differences below $\approx0.1$ in
+Table~\ref{tab:ablations} are not real. Training ran on CPU, which capped the
+search and the epoch budget. The gap handling assumes the private window is
+contiguous with the public history. Finally the model is deterministic, and its
+spike-dominated residual (\texttt{figures/forecast\_examples.pdf}) is where a
+quantile head \cite{salinas2020deepar} should help.
+
+\paragraph{Future work.} Beyond a probabilistic head: cross-series attention over
+the $96$ units, whose correlations our channel-independent treatment ignores, and a
+comparison against a strong MLP covariate model such as TiDE \cite{das2023tide} to
+test how much attention actually adds.
+
+\section*{Contributions}
+
+\textbf{Rosela Berberi} --- data analysis establishing the covariate contract and
+the per-series diagnostic; feature pipeline; PatchTST-cov; training and evaluation
+harness including the gap-aware protocol; inference and submission packaging.
+\textbf{Anja Koroveshi} --- LSTM+Attention including the RevIN statefulness fix,
+scheduled sampling and the chained rollout; baselines and metrics; ablation study
+and permutation analysis; Jena Climate selection, preprocessing and the past-only
+abstraction; figures. Experiments were designed and the report written jointly.
+
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}

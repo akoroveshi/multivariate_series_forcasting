@@ -1,0 +1,32 @@
+{
+  "lstm_teacher_forcing_only": {
+    "model": "lstm_attention",
+    "extra_args": [
+      "--teacher-forcing-start",
+      "1.0",
+      "--teacher-forcing-end",
+      "1.0"
+    ],
+    "val": {
+      "mae": 2.121560032396311,
+      "mse": 9.840917471294244,
+      "rmse": 3.1370236644460054,
+      "mape": 32.33606324376258,
+      "smape": 27.834030872775106,
+      "wape": 22.598719726602017
+    },
+    "test": {
+      "mae": 3.6623718687767415,
+      "mse": 24.272272383493934,
+      "rmse": 4.926689799804118,
+      "mape": 39.21865741192337,
+      "smape": 38.93345052505749,
+      "wape": 34.28980453249992
+    },
+    "params": 415638,
+    "best_epoch": 4,
+    "epochs_run": 5,
+    "train_windows": 3552,
+    "runtime_seconds": 2307.0
+  }
+}

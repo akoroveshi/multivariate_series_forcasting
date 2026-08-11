@@ -11,37 +11,54 @@ We implement two model families in PyTorch and blend them:
 |---|---|---|
 | **PatchTST-cov** | direct, 336 steps at once | PatchTST backbone extended with *known-future covariate query tokens*, a learned per-series embedding, and a pointwise covariate residual path |
 | **LSTM+Attention** | iterative, 24-step blocks | Encoder–decoder LSTM with Bahdanau attention and scheduled sampling |
-| **Blend** | after the rollout | Single scalar weight, grid-searched on a *gap-matched* validation criterion |
+| **Blend** | after the rollout | Five runs, weights from greedy forward selection on a *gap-matched* validation criterion |
 
 ## Results
 
 Held-out tails of `train.csv`; WAPE (%), lower is better. The **test regime**
 starts 336 steps after the conditioning window, reproducing the private split's
 unobserved gap. Nothing here uses leaderboard labels — see the protocol below.
+`(n win.)` is training windows per epoch: the two budgets differ by 8–12×, and
+that difference reverses the ranking.
 
 | Method | val MAE | val WAPE | test MAE | test WAPE |
 |---|---:|---:|---:|---:|
 | Naive last value | 4.91 | 52.34 | 5.34 | 49.96 |
 | Seasonal mean (dow × hour) | 3.50 | 37.27 | 3.35 | 31.38 |
-| PatchTST-cov | 1.49 | 15.92 | 1.66 | 15.56 |
-| PatchTST-cov, no RevIN | 1.47 | 15.70 | 1.55 | 14.47 |
-| LSTM+Attention | 1.73 | 18.42 | 2.57 | 24.09 |
-| LSTM+Attention, no RevIN | 1.49 | 15.92 | 1.57 | 14.71 |
-| **Blend, w = 0.55** (submitted) | **1.44** | **15.37** | **1.51** | **14.18** |
+| LSTM+Attention (7k win.) | 1.73 | 18.42 | 2.57 | 24.09 |
+| LSTM+Attention, no RevIN (55k win.) | 1.24 | 13.16 | 1.34 | 12.58 |
+| PatchTST-cov (13k win.) | 1.49 | 15.92 | 1.66 | 15.56 |
+| PatchTST-cov, no RevIN (151k win.) | 1.31 | 13.93 | 1.44 | 13.52 |
+| **Blend of 5 runs** (submitted) | **1.21** | **12.91** | **1.32** | **12.40** |
 
-Two findings drove the final design:
+On the **public leaderboard** the same submission scored **WAPE 12.819**
+(`results/leaderboard.json`) — 0.09 from what the local protocol predicted, on a
+different evaluation set. That agreement is the main reason we trusted the protocol
+for every selection decision.
+
+Three findings drove the final design:
 
 1. **The covariate contract dominates.** This benchmark supplies every covariate
    for the forecast window itself (`validation_input.csv` covers exactly the rows
    of `forecast_index_validation.csv`), so it is a covariate-conditioned regression
    rather than an extrapolation problem. Removing the future-covariate tokens costs
-   over 23 WAPE points; no other component is worth more than 2.
+   18.7 WAPE points and removing the covariates entirely 18.8–20.6; no other single
+   component in the ablation table is worth more than 4.2, and most are worth under 1.
 2. **RevIN hurts at this horizon.** It is near-standard in long-term forecasting,
    but re-injecting the conditioning window's mean and std over a 336–672 step
    horizon adds variance. For the iterative decoder it is worse: each chained block
    re-estimates those statistics from the block it just predicted, so the error
-   compounds (−11 WAPE in the gap regime when removed). The large gap-regime
+   compounds (+2.8 validation / +4.8 gap when added back). The large gap-regime
    collapse we initially attributed to iterative decoding was mostly this.
+3. **The compute budget decided three comparisons, not the components.** Under the
+   CPU budget the Transformer beat the LSTM by 2.5 WAPE; on a GPU with 8–12× the
+   windows per epoch the ranking inverts. The same happened inside the ablation
+   table: *attention* looked load-bearing (+11.0 without it) and is worth +0.14 at
+   the full budget, while the *per-series embedding* looked worthless (−0.12) and
+   is worth +4.1/+11.8. Always in the same direction — starvation makes capacity
+   look useless and its substitutes look essential. This is why the ablations are
+   run at the same budget as the shipped members (`--budget full`), and why the
+   CPU-budget variant is kept only as a laptop-sized fallback.
 
 ## Layout
 
@@ -56,8 +73,10 @@ report/
 results/                       # one JSON per experiment (all reported numbers)
 runs/                          # checkpoints and per-run metrics (git-ignored)
 scripts/
-  run_all.sh                   # reproduce every experiment, in order
+  run_all.sh                   # the CPU stage, in order
   run_local_baselines.py       # course reference baselines on the local splits
+  run_parallel.py              # CPU scheduler: jobs against a thread budget
+  run_gpu_grid.py              # the 26-config GPU grid that produced the members
   run_ablations.py             # ablation study (identical budget per row)
   jena_experiment.py           # additional dataset (Jena Climate)
   build_ensemble.py            # blending-weight search -> ensemble checkpoint
@@ -83,8 +102,10 @@ pip install -r student/submission_template/requirements.txt
 pip install matplotlib                                  # figures only
 ```
 
-Tested with Python 3.13, PyTorch 2.13 (CPU), pandas 2.2, NumPy 2.2. A GPU is not
-required; every number in the report was produced on 6 CPU cores.
+Tested with Python 3.13 / PyTorch 2.13 on Windows (CPU) and Python 3.12 / CUDA on
+the training nodes. The pipeline runs end to end on CPU, but the numbers in the
+report come from the GPU stage — the two budgets do not agree, and that
+disagreement is one of the findings.
 
 ### Data
 
@@ -103,14 +124,15 @@ python -c "import zipfile; zipfile.ZipFile('data/jena.zip').extractall('data/')"
 
 ## Reproducing the results
 
-Everything at once (≈ 3–4 h on 6 CPU cores):
+The CPU stage, all at once (≈ 3–4 h on 6 cores):
 
 ```bash
 bash scripts/run_all.sh          # THREADS=4 bash scripts/run_all.sh on a smaller box
 ```
 
-There are 28 independent training runs (2 main models, 2 full-history retrains, 16
-ablations, 4 additional-dataset runs, 4 RevIN-free variants). A small Transformer
+That is 28 independent training runs (2 main models, 2 full-history retrains, 16
+ablations, 4 additional-dataset runs, 4 RevIN-free variants); the GPU stage below
+adds 31 grid configurations and re-runs the 16 ablations. A small Transformer
 or LSTM scales poorly past a couple of CPU threads, so running them one at a time
 wastes most of the machine. `scripts/run_parallel.py` schedules them against a **CPU
 thread budget** instead of a worker count: each job declares how many threads it
@@ -124,6 +146,39 @@ python scripts/run_parallel.py --threads 8                   # main + ablations 
 python scripts/run_parallel.py --stage full --threads 8      # submission members
 python scripts/run_parallel.py --stage variants              # RevIN-free candidates
 ```
+
+### The GPU grid (this is what produced the submitted members)
+
+The CPU numbers above are honest but starved, and finding #3 is that the starvation
+was doing the deciding. `scripts/run_gpu_grid.py` re-runs both families on one GPU
+across 26 configurations in four rounds — window strides 2–12, hidden/model widths,
+dropout, layer counts, learning rates — plus a full-history twin of every config
+that entered the blend. It tags processes with [RTPT](https://pypi.org/project/rtpt/)
+so a shared node shows who owns which job.
+
+```bash
+python scripts/run_gpu_grid.py --dry-run                     # show the grid
+python scripts/run_gpu_grid.py --concurrency 4 --rtpt RB     # the whole grid
+python scripts/run_gpu_grid.py --only full_lstm_s6 full_lstm_s12 \
+    full_lstm_s12_h256 full_patchtst_s2_do2 full_patchtst_s6_d256   # the twins
+python scripts/run_ablations.py --budget full --device cuda --rtpt RB   # Table 2
+
+python scripts/build_ensemble.py --device cuda \
+  --members runs/gpu_lstm_s6/checkpoint.pt runs/gpu_lstm_s12/checkpoint.pt \
+            runs/gpu_lstm_s12_h256/checkpoint.pt \
+            runs/gpu4_patchtst_s2_do2/checkpoint.pt \
+            runs/gpu_patchtst_s6_d256/checkpoint.pt
+python scripts/make_submission.py            # blends the full-history twins
+```
+
+The script sets `CUDA_VISIBLE_DEVICES=0` for its children itself, so it does not
+matter which shell you launch it from.
+
+Each twin repeats its config's *epoch budget exactly*, not "at least". The
+scheduled-sampling ratio is annealed across the whole budget, so a longer budget is
+a slower anneal rather than a superset — stretching the winning 30-epoch LSTM to
+100 epochs made it worse (13.16 → 13.40). That constraint is enforced in
+`make_submission.TWIN_OF` and commented at the top of `run_gpu_grid.GRID`.
 
 Individual runs, if you prefer:
 
@@ -141,7 +196,8 @@ python -m src.train --train ../../data/train.csv --model lstm_attention \
   --metrics-out ../../results/lstm_main.json
 cd ../..
 
-python scripts/run_ablations.py            # all 16, sequentially
+python scripts/run_ablations.py --budget cpu   # all 16, sequentially, no GPU
+python scripts/run_ablations.py --budget full --device cuda --rtpt RB   # reported
 python scripts/jena_experiment.py          # additional dataset
 python scripts/build_ensemble.py           # blending weight + ensemble checkpoint
 
@@ -160,12 +216,14 @@ reported numbers reproduce to about ±0.05 WAPE.
 | File | Contents |
 |---|---|
 | `baselines_local.json` | the four course baselines on both local splits |
-| `{patchtst,lstm}_{main,norevin}.json` | per-epoch curves + final metrics for the four candidates |
-| `ablations.json` | all 16 ablations, merged from `ablations/<name>.json` (one file per job) |
+| `{patchtst,lstm}_{main,norevin}.json` | per-epoch curves + final metrics, CPU budget |
+| `gpu*.json` | one file per GPU-grid configuration (the full budget) |
+| `ablations.json` | all 16 ablations at one budget, merged from `ablations/<name>.json` |
+| `leaderboard.json` | the public score of the submitted CSV, transcribed from the Space |
 | `jena.json` | additional dataset, merged from `jena/<target>_<model>.json` |
-| `ensemble.json` | the full blend-weight grid on all three evaluations |
+| `ensemble.json` | greedy-selection trace, weights, and all three evaluations for every member |
 | `permutation_importance.json` | ΔWAPE per shuffled covariate |
-| `selection.json` | which variant of each family was shipped |
+| `selection.json` | which full-history twin backs each blend member |
 
 `report/figures/` holds four figures. Only `error_by_horizon.pdf` is embedded in
 the report; `permutation_importance.pdf`, `forecast_examples.pdf` and
@@ -202,11 +260,14 @@ final checkpoint. Our metric code is a copy of the leaderboard's, but the evalua
 *set* is a held-out tail of `train.csv` rather than the hidden validation split, so
 these values are **not** directly comparable to leaderboard scores.
 
-The blending weight additionally uses a *gap-matched* criterion (`--select-on
+The blend weights additionally use a *gap-matched* criterion (`--select-on
 val_gap`): the same validation labels, but with the forecast origin moved back one
 window so the members must bridge 336 unobserved steps. Tuning on the plain
 validation regime tunes on a regime the model never actually runs in — before the
 RevIN repair that mistake cost 0.26 WAPE in the gap regime.
+
+In practice this protocol tracked the public leaderboard to within 0.05 WAPE, which
+is why we trusted it for every selection decision.
 
 ## Final submission
 
@@ -215,8 +276,10 @@ python scripts/make_submission.py --retrain     # retrain members on the full hi
 python scripts/verify_submission.py             # rehearse the private command, scored
 ```
 
-`make_submission.py` retrains both members on the complete public history for the
-epoch budget selected locally, blends them, bundles a 504-step history tail plus
+`make_submission.py` takes the full-history twin of every blend member — same
+architecture, same epoch budget, refit on all 4,320 steps including the 672 that
+local model selection had to hold out — blends them with the weights from
+`results/ensemble.json`, bundles a 504-step history tail plus
 the public validation covariates into `checkpoint.pt`, writes
 `submission/validation_predictions_*.csv` for the public leaderboard, and packs
 `submission/final_submission.zip` containing `predict.py`, `requirements.txt`,

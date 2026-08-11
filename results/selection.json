@@ -1,4 +1,7 @@
 {
-  "patchtst": "patchtst_norevin",
-  "lstm_attention": "lstm_norevin"
+  "gpu_lstm_s6": "full_lstm_s6",
+  "gpu_lstm_s12": "full_lstm_s12",
+  "gpu_lstm_s12_h256": "full_lstm_s12_h256",
+  "gpu4_patchtst_s2_do2": "full_patchtst_s2_do2",
+  "gpu_patchtst_s6_d256": "full_patchtst_s6_d256"
 }

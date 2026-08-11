@@ -5,22 +5,22 @@
 \cmidrule(lr){2-3}\cmidrule(lr){4-5}
 Configuration & WAPE & $\Delta$ & WAPE & $\Delta$ \\
 \midrule
-PatchTST-cov (ref.) & 16.92 & & 16.49 & \\
-\quad MSE instead of $L_1$ & 17.78 & +0.85 & 17.92 & +1.43 \\
-\quad no RevIN & 16.27 & -0.65 & 15.26 & -1.23 \\
-\quad no covariates (vanilla) & 47.70 & +30.78 & 37.41 & +20.92 \\
-\quad no future cov.\ tokens & 40.19 & +23.27 & 42.02 & +25.53 \\
-\quad no pointwise path & 18.52 & +1.60 & 18.06 & +1.58 \\
-\quad no series embedding & 17.27 & +0.34 & 16.63 & +0.14 \\
-\quad patch 48, step 24 & 17.69 & +0.77 & 17.53 & +1.04 \\
-\quad patch 8, step 4 & 17.30 & +0.37 & 16.27 & -0.21 \\
+PatchTST-cov (ref.) & 14.76 & & 13.68 & \\
+\quad $+$ RevIN & 15.08 & +0.32 & 14.45 & +0.77 \\
+\quad MSE instead of $L_1$ & 15.23 & +0.47 & 14.07 & +0.39 \\
+\quad no covariates (vanilla) & 33.55 & +18.80 & 32.65 & +18.97 \\
+\quad no future cov.\ tokens & 33.42 & +18.66 & 30.36 & +16.68 \\
+\quad no pointwise path & 15.36 & +0.61 & 14.38 & +0.70 \\
+\quad no series embedding & 15.22 & +0.46 & 14.37 & +0.69 \\
+\quad patch 48, step 24 & 14.55 & -0.21 & 13.87 & +0.19 \\
+\quad patch 8, step 4 & 14.31 & -0.45 & 13.35 & -0.33 \\
 \midrule
-LSTM+Attention (ref.) & 21.65 & & 30.60 & \\
-\quad free running only & 21.13 & -0.52 & 30.25 & -0.35 \\
-\quad no RevIN & 20.32 & -1.33 & 19.57 & -11.03 \\
-\quad no attention & 32.68 & +11.03 & 36.52 & +5.93 \\
-\quad no covariates & 40.52 & +18.88 & 40.94 & +10.35 \\
-\quad no series embedding & 21.52 & -0.12 & 32.21 & +1.61 \\
-\quad teacher forcing only & 22.60 & +0.95 & 34.29 & +3.69 \\
+LSTM+Attention (ref.) & 13.16 & & 12.58 & \\
+\quad $+$ RevIN & 15.99 & +2.83 & 17.38 & +4.80 \\
+\quad free running only & 13.53 & +0.37 & 12.81 & +0.24 \\
+\quad no attention & 13.30 & +0.14 & 12.61 & +0.03 \\
+\quad no covariates & 33.73 & +20.57 & 39.14 & +26.57 \\
+\quad no series embedding & 17.27 & +4.11 & 24.33 & +11.75 \\
+\quad teacher forcing only & 14.14 & +0.98 & 13.51 & +0.94 \\
 \bottomrule
 \end{tabular}

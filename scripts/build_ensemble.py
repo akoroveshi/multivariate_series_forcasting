@@ -1,25 +1,30 @@
-"""Blend the trained members into a single ensemble checkpoint.
+"""Blend trained runs into a single ensemble checkpoint.
 
-The blending weight is a single scalar chosen by grid search. *Which* split it is
-chosen on turns out to matter more than its value. Three evaluations are reported:
+Weights come from **greedy forward selection with replacement** (Caruana et al.'s
+ensemble selection): start from the empty blend and repeatedly add whichever member
+most improves the criterion, allowing the same member to be picked again. After
+``--rounds`` picks the weights are the pick counts, normalised. This scales to any
+number of members, needs no combinatorial search, and resists overfitting a small
+validation window far better than optimising a continuous weight vector.
+
+*Which* split the weights are chosen on matters more than their values, so three
+evaluations are reported:
 
 ``val``
     forecast origin at the end of the fit slice -- the public-leaderboard regime.
 ``val_gap``
-    the same validation labels, but reached across a 336-step unobserved gap
-    (the origin is moved back to ``fit_end - 336``). This uses validation labels
-    only, and it is the regime the private test split actually has.
+    the same validation labels, but reached across a 336-step unobserved gap (the
+    origin is moved back one window). This is the regime the private split has.
 ``test``
     the held-out test window, scored once and never used for any decision.
 
-The weight is selected on ``val_gap`` by default. Selecting it on ``val`` instead
-overweights the recurrent member, whose error grows with the number of chained
-blocks, and that error is invisible until the gap appears.
+Members are evaluated **unclipped**: :class:`EnsembleForecaster` blends raw member
+rollouts and applies the clip once to the blend, so clipping first would make the
+searched score a different function from the one the saved checkpoint computes.
 
 Usage::
 
-    python scripts/build_ensemble.py --members runs/patchtst_main/checkpoint.pt \
-        runs/lstm_main/checkpoint.pt --out results/ensemble.json
+    python scripts/build_ensemble.py --members runs/a/checkpoint.pt runs/b/checkpoint.pt ...
 """
 
 from __future__ import annotations
@@ -43,19 +48,9 @@ from src.train import build_panel  # noqa: E402
 
 
 def member_predictions(
-    checkpoints: list[Path],
-    panel,
-    positions: slice,
-    history_end: int,
-    device: str,
-) -> tuple[np.ndarray, list[np.ndarray], pd.DataFrame]:
-    """Return ``(truth, [raw member predictions], index frame)`` aligned row-wise.
-
-    Members are evaluated **unclipped** on purpose. :class:`EnsembleForecaster`
-    blends raw member rollouts and the clip is applied once to the blend, so
-    clipping here first would make the searched score a different function from
-    the one the saved checkpoint computes.
-    """
+    checkpoints: list[Path], panel, positions: slice, history_end: int, device: str
+) -> tuple[np.ndarray, list[np.ndarray]]:
+    """``(truth, [raw per-member predictions])``, aligned row-wise."""
     labels = labels_from_panel(panel, positions)
     frames = []
     for path in checkpoints:
@@ -67,30 +62,41 @@ def member_predictions(
             predictions, on=["series_id", "timestamp"], how="left", validate="one_to_one"
         )
         frames.append(merged["prediction"].to_numpy())
-    return labels["target"].to_numpy(), frames, labels
+    return labels["target"].to_numpy(), frames
+
+
+def greedy_weights(
+    truth: np.ndarray, preds: list[np.ndarray], clip_min: float, rounds: int
+) -> tuple[np.ndarray, list[str]]:
+    """Greedy forward selection with replacement; returns normalised weights."""
+    counts = np.zeros(len(preds))
+    running = np.zeros_like(truth, dtype=float)
+    trace = []
+    for step in range(1, rounds + 1):
+        best, best_mae = None, np.inf
+        for index, candidate in enumerate(preds):
+            blended = np.maximum((running * (step - 1) + candidate) / step, clip_min)
+            mae = float(np.mean(np.abs(truth - blended)))
+            if mae < best_mae:
+                best, best_mae = index, mae
+        counts[best] += 1
+        running = (running * (step - 1) + preds[best]) / step
+        trace.append(f"{step}:{best}({best_mae:.4f})")
+    return counts / counts.sum(), trace
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Search blending weights and save an ensemble.")
+    parser = argparse.ArgumentParser(description="Blend runs into an ensemble checkpoint.")
     parser.add_argument("--train", type=Path, default=ROOT / "data" / "train.csv")
-    parser.add_argument(
-        "--members",
-        nargs="+",
-        type=Path,
-        default=[
-            ROOT / "runs" / "patchtst_main" / "checkpoint.pt",
-            ROOT / "runs" / "lstm_main" / "checkpoint.pt",
-        ],
-    )
+    parser.add_argument("--members", nargs="+", type=Path, required=True)
     parser.add_argument("--out", type=Path, default=ROOT / "results" / "ensemble.json")
     parser.add_argument("--checkpoint-out", type=Path, default=ROOT / "runs" / "ensemble" / "checkpoint.pt")
     parser.add_argument("--val-len", type=int, default=336)
     parser.add_argument("--test-len", type=int, default=336)
+    parser.add_argument("--rounds", type=int, default=20, help="Greedy selection steps.")
     parser.add_argument(
-        "--select-on",
-        default="val_gap",
-        choices=["val", "val_gap"],
-        help="Which validation-label evaluation selects the blending weight.",
+        "--select-on", default="val_gap", choices=["val", "val_gap"],
+        help="Which validation-label evaluation selects the weights.",
     )
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
@@ -98,98 +104,52 @@ def main() -> None:
     missing = [str(p) for p in args.members if not p.exists()]
     if missing:
         raise SystemExit(f"Missing member checkpoint(s): {missing}")
-    if len(args.members) != 2:
-        raise SystemExit("The weight grid search is implemented for exactly two members.")
 
     frame = pd.read_csv(args.train)
     length = int(frame.groupby("series_id", sort=False).size().max())
-    fit_end = length - args.val_len - args.test_len
-    panel, length = build_panel(frame, FeatureSpec.benchmark(), fit_end)
+    panel, length = build_panel(frame, FeatureSpec.benchmark(), length - args.val_len - args.test_len)
     fit_slice, val_slice, test_slice = split_positions(length, args.val_len, args.test_len)
 
-    loaded_configs = [
-        ForecastModel.load_checkpoint(str(p), map_location=args.device).config for p in args.members
-    ]
-    clip_min = min(float(cfg.get("clip_min", 0.0)) for cfg in loaded_configs)
+    loaded = [ForecastModel.load_checkpoint(str(p), map_location=args.device) for p in args.members]
+    clip_min = min(float(m.config.get("clip_min", 0.0)) for m in loaded)
+    names = [p.parent.name for p in args.members]
 
-    results: dict[str, object] = {"members": [str(p) for p in args.members], "clip_min": clip_min}
-    grids: dict[str, list[dict[str, float]]] = {}
-    weights = np.round(np.arange(0.0, 1.0001, 0.05), 2)
-    best_weight = 1.0
-
-    # (name, scored positions, forecast origin). ``val_gap`` reuses the validation
-    # labels but moves the origin back by one validation window, so the members are
-    # exercised over the same unobserved gap the private split has.
     evaluations = [
         ("val", val_slice, fit_slice.stop),
         ("val_gap", val_slice, fit_slice.stop - args.val_len),
         ("test", test_slice, fit_slice.stop),
     ]
-    order = {name: index for index, (name, _, _) in enumerate(evaluations)}
-    evaluations.sort(key=lambda item: item[0] != args.select_on)
+    evaluations.sort(key=lambda item: item[0] != args.select_on)  # selection split first
 
+    results: dict[str, object] = {
+        "members": [str(p) for p in args.members],
+        "member_names": names,
+        "clip_min": clip_min,
+        "selected_on": args.select_on,
+        "rounds": args.rounds,
+    }
+    weights: np.ndarray | None = None
     for split_name, positions, origin in evaluations:
-        truth, member_preds, _ = member_predictions(
-            args.members, panel, positions, origin, args.device
-        )
-        grid = []
-        for weight in weights:
-            # Blend first, clip once -- exactly what EnsembleForecaster.rollout does.
-            blended = np.maximum(
-                weight * member_preds[0] + (1.0 - weight) * member_preds[1], clip_min
-            )
-            metrics = compute_metrics(truth, blended)
-            grid.append({"weight": float(weight), **metrics})
-        grids[split_name] = grid
-        if split_name == args.select_on:
-            best = min(grid, key=lambda row: row["mae"])
-            best_weight = float(best["weight"])
-            print(f"selected weight on '{split_name}': {best_weight:.2f} (WAPE {best['wape']:.3f})")
-        chosen = next(row for row in grid if abs(row["weight"] - best_weight) < 1e-9)
-        results[split_name] = {k: v for k, v in chosen.items() if k != "weight"}
+        truth, preds = member_predictions(args.members, panel, positions, origin, args.device)
+        if weights is None:
+            weights, trace = greedy_weights(truth, preds, clip_min, args.rounds)
+            results["weights"] = weights.tolist()
+            results["greedy_trace"] = trace
+            picked = {n: round(float(w), 3) for n, w in zip(names, weights) if w > 0}
+            print(f"selected on '{split_name}': {picked}")
+        blended = np.maximum(sum(w * p for w, p in zip(weights, preds)), clip_min)
+        results[split_name] = compute_metrics(truth, blended)
         results[f"{split_name}_members"] = [
-            compute_metrics(truth, np.maximum(preds, clip_min)) for preds in member_preds
+            compute_metrics(truth, np.maximum(p, clip_min)) for p in preds
         ]
         print(f"[{split_name:7s}] ensemble {format_metrics(results[split_name])}")
-        for name, metrics in zip(args.members, results[f"{split_name}_members"]):
-            print(f"[{split_name:7s}] {name.parent.name:16s} {format_metrics(metrics)}")
+        for name, metrics in zip(names, results[f"{split_name}_members"]):
+            print(f"[{split_name:7s}]   {name:26s} {format_metrics(metrics)}")
 
-    results["weight"] = best_weight
-    results["selected_on"] = args.select_on
-    results["weight_grid"] = {k: grids[k] for k in sorted(grids, key=lambda n: order[n])}
-
-    # Record what the *other* criterion would have picked. This is the interesting
-    # comparison: a weight tuned on the leaderboard regime looks better there and
-    # is worse where it actually has to run.
-    other = "val" if args.select_on == "val_gap" else "val_gap"
-    alternative_weight = float(min(grids[other], key=lambda row: row["mae"])["weight"])
-    results["alternative"] = {
-        "selected_on": other,
-        "weight": alternative_weight,
-        **{
-            name: {
-                k: v
-                for k, v in next(
-                    row for row in grid if abs(row["weight"] - alternative_weight) < 1e-9
-                ).items()
-                if k != "weight"
-            }
-            for name, grid in grids.items()
-        },
-    }
-    print(
-        f"[compare] selecting on '{other}' would pick w={alternative_weight:.2f}: "
-        f"val WAPE {results['alternative']['val']['wape']:.3f}, "
-        f"test WAPE {results['alternative']['test']['wape']:.3f} "
-        f"(chosen w={best_weight:.2f}: {results['val']['wape']:.3f} / {results['test']['wape']:.3f})"
-    )
-
-    # Persist the ensemble as one checkpoint so predict.py stays unchanged.
-    loaded = [ForecastModel.load_checkpoint(str(p), map_location=args.device) for p in args.members]
     ensemble = ForecastModel(
         model_type="ensemble",
         members=[m.config for m in loaded],
-        member_weights=[best_weight, 1.0 - best_weight],
+        member_weights=weights.tolist(),
         history_len=max(m.history_len for m in loaded),
         clip_min=clip_min,
     )
@@ -200,25 +160,22 @@ def main() -> None:
     args.checkpoint_out.parent.mkdir(parents=True, exist_ok=True)
     ensemble.save_checkpoint(str(args.checkpoint_out))
 
-    # Sanity check: the saved artefact must reproduce the searched score.
-    reloaded = ForecastModel.load_checkpoint(str(args.checkpoint_out), map_location=args.device)
+    # .to(device) is required, not decorative: load_checkpoint maps the *state dict*
+    # onto the device but copies it into parameters that were constructed on CPU, so
+    # the module itself stays on CPU and a CUDA batch would hit a device mismatch.
+    reloaded = ForecastModel.load_checkpoint(
+        str(args.checkpoint_out), map_location=args.device
+    ).to(args.device)
     verify, _ = evaluate_split(
-        reloaded,
-        panel,
-        val_slice,
-        fit_slice.stop,
-        args.device,
-        reloaded.history_len,
+        reloaded, panel, val_slice, fit_slice.stop, args.device, reloaded.history_len,
         clip_min=reloaded.config.get("clip_min"),
     )
     results["checkpoint_val"] = verify
     print(f"[verify] reloaded ensemble {format_metrics(verify)}")
-    searched = results["val"]["wape"]
-    if abs(verify["wape"] - searched) > 1e-4:
+    if abs(verify["wape"] - results["val"]["wape"]) > 1e-4:
         raise SystemExit(
-            f"Saved checkpoint scores {verify['wape']:.4f} WAPE on 'val' but the weight "
-            f"search reported {searched:.4f}: the searched blend and the serialised one "
-            "disagree."
+            f"Saved checkpoint scores {verify['wape']:.4f} on 'val' but the search reported "
+            f"{results['val']['wape']:.4f}: searched and serialised blends disagree."
         )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)

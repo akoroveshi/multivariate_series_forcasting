@@ -1,18 +1,27 @@
 #!/usr/bin/env bash
-# Reproduce every experiment reported in the paper.
+# Reproduce the CPU half of the paper: baselines, both model families, the full
+# ablation study and the additional dataset.
 #
 #   bash scripts/run_all.sh                 # everything
 #   THREADS=4 bash scripts/run_all.sh       # on a smaller machine
 #
 # Stages:
 #   1. reference baselines on the local splits                        (seconds)
-#   2. all 22 training runs, in parallel under a CPU thread budget:
+#   2. 22 training runs, in parallel under a CPU thread budget:
 #        2 main models + 16 ablations + 4 additional-dataset runs
-#   3. the two submission members retrained on the full public history
-#   4. blending ensemble, report tables and figures
+#   3. the submission members retrained on the full public history
+#   4. RevIN-free variants at full budget
+#   5. blend, report tables and figures
 #
-# Everything runs on CPU. On 6 physical cores the whole pipeline takes roughly
+# Everything here runs on CPU. On 6 physical cores the pipeline takes roughly
 # 3-4 hours of wall clock; scripts/run_parallel.py prints per-job timings.
+#
+# The *submitted* models are not produced here. Under this budget an epoch sees a
+# few per cent of the available training windows, which is enough to rank each
+# ablation against its own reference but not enough to rank the two architectures
+# against each other -- see finding #3 in the README. Run scripts/run_gpu_grid.py
+# on a GPU for the models that actually shipped; stage 5 below then picks them up
+# automatically, because it blends the best runs present in results/.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -20,11 +29,11 @@ DATA="${DATA_DIR:-$ROOT/data}"
 THREADS="${THREADS:-8}"
 mkdir -p "$ROOT/results" "$ROOT/runs" "$ROOT/logs"
 
-echo "=== 1/4 reference baselines ==="
+echo "=== 1/5 reference baselines ==="
 python "$ROOT/scripts/run_local_baselines.py" --train "$DATA/train.csv" \
   --out "$ROOT/results/baselines_local.json" 2>&1 | tee "$ROOT/logs/baselines.log"
 
-echo "=== 2/4 main models, ablations and additional dataset (parallel) ==="
+echo "=== 2/5 main models, ablations and additional dataset (parallel) ==="
 python "$ROOT/scripts/run_parallel.py" --data-dir "$DATA" --threads "$THREADS" \
   --stage main ablations jena 2>&1 | tee "$ROOT/logs/parallel.log"
 
@@ -39,10 +48,33 @@ python "$ROOT/scripts/run_parallel.py" --data-dir "$DATA" --threads "$THREADS" \
   --stage variants 2>&1 | tee "$ROOT/logs/parallel_variants.log"
 
 echo "=== 5/5 ensemble, tables, figures ==="
-BEST_PATCH=$(python -c "import sys,json;sys.path.insert(0,'$ROOT/scripts');from pathlib import Path;from variants import select_best;print(select_best(Path('$ROOT/results'))['patchtst'])")
-BEST_LSTM=$(python -c "import sys,json;sys.path.insert(0,'$ROOT/scripts');from pathlib import Path;from variants import select_best;print(select_best(Path('$ROOT/results'))['lstm_attention'])")
+# Hand the greedy search the eight best runs that have a checkpoint on disk rather
+# than one per family: it assigns zero weight to members it cannot use, so a larger
+# pool costs search time and nothing else, and members that are individually weaker
+# still earn weight when their errors are decorrelated.
+mapfile -t MEMBERS < <(python - "$ROOT" <<'PY'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root / "scripts"))
+from variants import load_runs  # noqa: E402
+
+runs = load_runs(root / "results")
+for tag, _ in sorted(runs.items(), key=lambda kv: kv[1]["val"]["wape"])[:8]:
+    checkpoint = root / "runs" / tag / "checkpoint.pt"
+    if checkpoint.exists():
+        print(checkpoint)
+PY
+)
+if [ "${#MEMBERS[@]}" -eq 0 ]; then
+  echo "no run checkpoints found under $ROOT/runs; nothing to blend" >&2
+  exit 1
+fi
+printf 'blending %d candidate members:\n' "${#MEMBERS[@]}"
+printf '  %s\n' "${MEMBERS[@]}"
 python "$ROOT/scripts/build_ensemble.py" --train "$DATA/train.csv" \
-  --members "$ROOT/runs/$BEST_PATCH/checkpoint.pt" "$ROOT/runs/$BEST_LSTM/checkpoint.pt" \
+  --members "${MEMBERS[@]}" \
   --out "$ROOT/results/ensemble.json" 2>&1 | tee "$ROOT/logs/ensemble.log"
 python "$ROOT/scripts/make_report_tables.py"
 python "$ROOT/scripts/make_figures.py"

@@ -54,6 +54,25 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
+def make_progress_reporter(tag: str, epochs: int, initials: str = ""):
+    """Return a per-epoch callback that renames the process for `nvidia-smi`.
+
+    On a shared GPU pool, etiquette is that other users can see who is occupying
+    a card and for how long. RTPT does that by rewriting the process title. It is
+    optional: if the package is absent (e.g. local CPU runs) this is a no-op.
+    """
+    if not initials:
+        return lambda: None
+    try:
+        from rtpt import RTPT
+    except ImportError:
+        print("[rtpt] not installed; process will not be tagged", flush=True)
+        return lambda: None
+    reporter = RTPT(name_initials=initials, experiment_name=tag[:20], max_iterations=epochs)
+    reporter.start()
+    return reporter.step
+
+
 def scheduled_sampling_ratio(epoch: int, total_epochs: int, start: float, end: float) -> float:
     """Linearly anneal the teacher-forcing probability across training.
 
@@ -166,7 +185,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--n-layers", type=int, default=3)
     parser.add_argument("--d-ff", type=int, default=256)
 
-    parser.add_argument("--no-revin", action="store_true", help="Ablation: disable RevIN.")
+    # Both directions are spellable so an ablation can be run either way round:
+    # with a RevIN-on reference (--no-revin removes it) or, as the full-budget
+    # study does, with the shipped RevIN-free reference (--revin adds it back).
+    parser.add_argument(
+        "--revin",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Reversible instance normalisation (default on; --no-revin ablates it).",
+    )
     parser.add_argument(
         "--no-series-embedding",
         action="store_true",
@@ -195,6 +222,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--tag", default="", help="Free-form label stored in the run log.")
+    parser.add_argument(
+        "--rtpt",
+        default="",
+        help="Name initials for RTPT process tagging on a shared GPU pool (e.g. RB).",
+    )
     parser.add_argument(
         "--eval-protocol",
         default="rollout",
@@ -283,7 +315,7 @@ def run_experiment(panel: SeriesPanel, args: argparse.Namespace) -> dict[str, An
         "history_len": args.history_len,
         "block_len": block_len,
         "dropout": args.dropout,
-        "use_revin": not args.no_revin,
+        "use_revin": args.revin,
         "clip_min": clip_min,
         "num_series_slots": 1 if args.no_series_embedding else panel.num_series_slots,
         "series_embedding_dim": args.series_embedding_dim,
@@ -330,6 +362,7 @@ def run_experiment(panel: SeriesPanel, args: argparse.Namespace) -> dict[str, An
         f"+{panel.num_static_features} device={device}"
     )
 
+    report_progress = make_progress_reporter(args.tag or args.model, epochs, args.rtpt)
     history: list[dict[str, Any]] = []
     best_score = float("inf")
     best_epoch = -1
@@ -370,6 +403,7 @@ def run_experiment(panel: SeriesPanel, args: argparse.Namespace) -> dict[str, An
 
         history.append(record)
         print(f"{message}  ({time.time() - started:.0f}s)", flush=True)
+        report_progress()
 
         if score < best_score - 1e-6:
             best_score, best_epoch = score, epoch + 1

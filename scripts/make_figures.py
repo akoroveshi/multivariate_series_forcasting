@@ -136,8 +136,10 @@ def figure_error_by_horizon(panel, checkpoints, fit_slice, val_slice, test_slice
     """
     positions = slice(val_slice.start, test_slice.stop)
     labels = labels_from_panel(panel, positions)
+    # ``to_numpy()`` can hand back a read-only view depending on the pandas/numpy
+    # build, so add out-of-place rather than in-place.
     steps = labels.groupby("series_id", sort=False).cumcount().to_numpy()
-    steps += positions.start - fit_slice.stop
+    steps = steps + (positions.start - fit_slice.stop)
     truth = labels["target"].to_numpy()
 
     series = []

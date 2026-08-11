@@ -1,0 +1,17 @@
+{
+  "_comment": "Public leaderboard score for the submitted validation predictions, copied from the scoring Space. Recorded here so the report can cite it and so the local-protocol agreement claim is checkable.",
+  "model_name": "g140_patchfusion_ens",
+  "submission_id": "2026-08-10T22-35-30+00-00-9fc2d0e7",
+  "sha256": "f56d0bf93567965adcfee33cf9d5da5e42c6795dabb53565f8a4d18992d70582",
+  "split": "public validation",
+  "metrics": {
+    "mae": 1.411101,
+    "mse": 7.034411,
+    "rmse": 2.652246,
+    "mape": 15.071482,
+    "smape": 14.157117,
+    "wape": 12.819186
+  },
+  "local_val_wape": 12.9106,
+  "note": "Local gap-aware protocol predicted 12.91 against 12.82 measured; the two evaluation sets differ (held-out tail of train.csv vs the hidden validation split), so this is agreement of the protocol, not the same quantity measured twice."
+}
